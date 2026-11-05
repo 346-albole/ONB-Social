@@ -2,7 +2,7 @@
 import { ref, watch, nextTick, onMounted, computed, onUnmounted } from 'vue'
 import { getAiResponse, loadModel, modelState, loadProgress, progressCallbacks, conversationHistory, isTrollMode } from '../lib/aiBrain'
 import { sessionRef } from '../lib/authStore'
-import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 
 const isOpen = ref(false)
 const newMessage = ref('')
@@ -158,7 +158,7 @@ const toggleChat = async () => {
 
     // Load profile for context if not already loaded
     if (!profile.value && sessionRef.value?.user) {
-      const { data } = await supabase.from('profiles').select('*').eq('id', sessionRef.value.user.id).maybeSingle()
+      const { data } = await api.get('/me')
       profile.value = data
     }
   }
@@ -189,7 +189,7 @@ onMounted(() => {
   progressCallbacks.push((p) => { currentProgress.value = p })
 
   if (sessionRef.value?.user) {
-    supabase.from('profiles').select('*').eq('id', sessionRef.value.user.id).maybeSingle()
+    api.get('/me')
       .then(res => profile.value = res.data)
   }
 })

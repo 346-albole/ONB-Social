@@ -1,7 +1,9 @@
 <script setup>
 import { RouterView, useRouter, useRoute } from 'vue-router'
 import { supabase } from './lib/supabaseClient'
-import { initAuth, updateSession, sessionRef } from './lib/authStore'
+import { api } from './lib/api'
+import { auth } from './lib/auth'
+import { initAuth, sessionRef } from './lib/authStore'
 import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
 import { initPresence, destroyPresence, onlineUsers } from './stores/presence'
 import { areNotifsEnabled } from './lib/pushNotifications'
@@ -17,7 +19,7 @@ const appCrashed = ref(false)
 const appIsReady = ref(false)
 let visibilityHandler = null
 let hiddenAt = 0            // tracks when the tab was hidden
-let authSubscription = null // supabase listener handle
+let stopAuthWatch = null    // auth module watcher
 let commandsSub = null      // supabase realtime handle for admin_commands
 
 onMounted(async () => {
@@ -37,26 +39,21 @@ onMounted(async () => {
       initAdminCommands(s.user.id)
     }
 
-    // Keep auth store + sidebar in sync on real auth events
-    const { data } = supabase.auth.onAuthStateChange(async (event, _session) => {
-      updateSession(event, _session)
-
-      if (event === 'SIGNED_OUT') {
+    // Keep sidebar in sync with sign-in / sign-out (auth module)
+    stopAuthWatch = watch(() => session.value?.user?.id, async (userId, previousId) => {
+      if (userId === previousId) return
+      if (!userId) {
         profile.value = null
         followedUsers.value = []
         destroyPresence()
         destroyAdminCommands()
+        if (route.meta.requiresAuth) router.push('/auth')
         return
       }
-      if (event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') return
-
-      if (_session) {
-        await loadSidebarData(_session.user.id, _session.user.email)
-        await initPresence(_session.user.id, profile.value?.is_invisible)
-        initAdminCommands(_session.user.id)
-      }
+      await loadSidebarData(userId, session.value.user.email)
+      await initPresence(userId, profile.value?.is_invisible)
+      initAdminCommands(userId)
     })
-    authSubscription = data.subscription
 
     visibilityHandler = async () => {
       if (document.visibilityState === 'visible' && session.value) {
@@ -81,38 +78,24 @@ onMounted(async () => {
 onUnmounted(() => {
   destroyPresence()
   destroyAdminCommands()
-  authSubscription?.unsubscribe()
+  stopAuthWatch?.()
   if (visibilityHandler) document.removeEventListener('visibilitychange', visibilityHandler)
 })
 
 async function loadSidebarData(userId, userEmail) {
-  const { data: p } = await supabase.from('profiles')
-    .select('id, username, avatar_url, is_premium, is_official, is_admin, username_color, custom_badge_url, onb_coins, premium_expires_at, official_expires_at, premium_is_permanent, official_is_permanent, is_banned, is_anonymous, is_invisible')
-    .eq('id', userId).maybeSingle()
+  const [{ data: p }, { data: social }] = await Promise.all([
+    api.get('/me'),
+    api.get('/me/social'),
+  ])
   profile.value = { email: userEmail, ...(p || {}) }
   checkRenewals(p)
-
-  const [iFollowRes, followMeRes] = await Promise.all([
-    supabase.from('follows').select('following_id').eq('follower_id', userId),
-    supabase.from('follows').select('follower_id').eq('following_id', userId),
-  ])
-
-  const iFollowIds = new Set(iFollowRes.data?.map(f => f.following_id) || [])
-  const followMeIds = new Set(followMeRes.data?.map(f => f.follower_id) || [])
-  const mutualIds = [...iFollowIds].filter(id => followMeIds.has(id))
-
-  if (mutualIds.length) {
-    const { data: friends } = await supabase.from('profiles')
-      .select('id, username, avatar_url').in('id', mutualIds)
-    followedUsers.value = friends || []
-  } else {
-    followedUsers.value = []
-  }
+  followedUsers.value = social?.mutuals || []
 }
 
 const handleSignOut = async () => {
   destroyPresence()
-  await supabase.auth.signOut()
+  destroyAdminCommands()
+  await auth.logout()
   router.push('/auth')
 }
 

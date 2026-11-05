@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout } from '../lib/withTimeout'
 import { areNotifsEnabled, setNotifsEnabled, getPermissionStatus } from '../lib/pushNotifications'
@@ -58,32 +59,23 @@ async function fetchProfileData() {
     if (!session?.user) { return }
     authUser.value = session.user
 
-    const { data: p, error: pErr } = await supabase
-      .from('profiles').select('*').eq('id', session.user.id).maybeSingle()
-    if (pErr) { console.error(pErr); return }
-
-    if (p) {
-      profile.value = p
-      hasBioCol.value = 'bio' in p
-    } else {
-      const { data: c } = await supabase.from('profiles')
-        .insert({ id: session.user.id, username: '', updated_at: new Date().toISOString() })
-        .select().maybeSingle()
-      if (c) { profile.value = c; hasBioCol.value = 'bio' in c }
-    }
+    // Le profil est créé par l'API à la première requête authentifiée
+    const { data: p, error: pErr } = await api.get('/me')
+    if (pErr || !p) { console.error(pErr); return }
+    profile.value = p
+    hasBioCol.value = 'bio' in p
     editUsername.value      = profile.value.username || ''
     editBio.value           = profile.value.bio || ''
     editUsernameColor.value = profile.value.username_color || ''
     editBannerColor.value   = profile.value.banner_color || BANNER_PRESETS[0].value
 
-    const [postsRes, fcRes, ingRes] = await Promise.all([
-      supabase.from('posts').select('*, likes(count)').eq('user_id', session.user.id).order('created_at', { ascending: false }),
-      supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', session.user.id),
-      supabase.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id', session.user.id),
+    const [postsRes, statsRes] = await Promise.all([
+      api.get(`/profiles/${session.user.id}/posts`),
+      api.get(`/profiles/${session.user.id}`),
     ])
     if (postsRes.data) userPosts.value = postsRes.data
-    followersCount.value = fcRes.count || 0
-    followingCount.value = ingRes.count || 0
+    followersCount.value = statsRes.data?.followers_count || 0
+    followingCount.value = statsRes.data?.following_count || 0
   } catch (err) {
     console.error('fetchProfileData error:', err)
   } finally {
@@ -97,23 +89,11 @@ async function openModal(type) {
   try {
     const uid = authUser.value.id
     if (type === 'followers') {
-      const res = await withTimeout(
-        supabase.from('follows').select('follower_id').eq('following_id', uid), 8000)
-      const ids = res?.data?.map(r => r.follower_id) || []
-      if (ids.length) {
-        const pRes = await withTimeout(
-          supabase.from('profiles').select('id, username, avatar_url, is_premium, username_color').in('id', ids), 8000)
-        followersList.value = pRes?.data || []
-      } else followersList.value = []
+      const res = await withTimeout(api.get(`/profiles/${uid}/followers`), 8000)
+      followersList.value = res?.data || []
     } else {
-      const res = await withTimeout(
-        supabase.from('follows').select('following_id').eq('follower_id', uid), 8000)
-      const ids = res?.data?.map(r => r.following_id) || []
-      if (ids.length) {
-        const pRes = await withTimeout(
-          supabase.from('profiles').select('id, username, avatar_url, is_premium, username_color').in('id', ids), 8000)
-        followingList.value = pRes?.data || []
-      } else followingList.value = []
+      const res = await withTimeout(api.get(`/profiles/${uid}/following`), 8000)
+      followingList.value = res?.data || []
     }
   } catch (e) {
     console.warn('openModal error:', e)
@@ -127,13 +107,12 @@ async function updateProfile() {
   saveError.value = ''
   saveSuccess.value = false
 
-  const payload = { username: editUsername.value.trim(), updated_at: new Date().toISOString() }
+  const payload = { username: editUsername.value.trim() }
   if (hasBioCol.value) payload.bio = editBio.value.trim()
   if (isPremium.value && 'username_color' in profile.value) payload.username_color = editUsernameColor.value
   if (isPremium.value && 'banner_color' in profile.value)   payload.banner_color   = editBannerColor.value
 
-  const { data: updated, error } = await supabase.from('profiles')
-    .update(payload).eq('id', authUser.value.id).select().maybeSingle()
+  const { data: updated, error } = await api.patch('/me', payload)
 
   if (error) {
     saveError.value = error.message
@@ -164,9 +143,7 @@ async function uploadAvatar(e) {
   const { error: upErr } = await supabase.storage.from('media').upload(fileName, file)
   if (upErr) { saving.value = false; return }
   const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName)
-  const { data: updated } = await supabase.from('profiles')
-    .update({ avatar_url: publicUrl, updated_at: new Date().toISOString() })
-    .eq('id', authUser.value.id).select().maybeSingle()
+  const { data: updated } = await api.patch('/me', { avatar_url: publicUrl })
   if (updated) {
     profile.value.avatar_url = updated.avatar_url
     emit('profile-updated', { username: profile.value.username, avatar_url: updated.avatar_url })
@@ -182,9 +159,7 @@ async function uploadChatBg(e) {
   const { error: upErr } = await supabase.storage.from('media').upload(fileName, file)
   if (upErr) { saving.value = false; return }
   const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName)
-  const { data: updated } = await supabase.from('profiles')
-    .update({ chat_bg_url: publicUrl, updated_at: new Date().toISOString() })
-    .eq('id', authUser.value.id).select().maybeSingle()
+  const { data: updated } = await api.patch('/me', { chat_bg_url: publicUrl })
   if (updated) {
     profile.value.chat_bg_url = updated.chat_bg_url
     emit('profile-updated', { username: profile.value.username, avatar_url: profile.value.avatar_url, chat_bg_url: updated.chat_bg_url })
@@ -195,9 +170,7 @@ async function uploadChatBg(e) {
 
 async function removeChatBg() {
   saving.value = true
-  const { data: updated } = await supabase.from('profiles')
-    .update({ chat_bg_url: null, updated_at: new Date().toISOString() })
-    .eq('id', authUser.value.id).select().maybeSingle()
+  const { data: updated } = await api.patch('/me', { chat_bg_url: null })
   if (updated) profile.value.chat_bg_url = null
   saving.value = false
 }
@@ -210,9 +183,7 @@ async function uploadBannerImage(e) {
   const { error: upErr } = await supabase.storage.from('media').upload(fn, file)
   if (upErr) { saving.value = false; return }
   const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fn)
-  const { data: updated } = await supabase.from('profiles')
-    .update({ banner_url: publicUrl, updated_at: new Date().toISOString() })
-    .eq('id', authUser.value.id).select().maybeSingle()
+  const { data: updated } = await api.patch('/me', { banner_url: publicUrl })
   if (updated) profile.value.banner_url = updated.banner_url
   saving.value = false
   e.target.value = ''
@@ -220,9 +191,7 @@ async function uploadBannerImage(e) {
 
 async function removeBannerImage() {
   saving.value = true
-  const { data: updated } = await supabase.from('profiles')
-    .update({ banner_url: null, updated_at: new Date().toISOString() })
-    .eq('id', authUser.value.id).select().maybeSingle()
+  const { data: updated } = await api.patch('/me', { banner_url: null })
   if (updated) profile.value.banner_url = null
   saving.value = false
 }
@@ -235,9 +204,7 @@ async function uploadCustomBadge(e) {
   const { error: upErr } = await supabase.storage.from('media').upload(fn, file)
   if (upErr) { saving.value = false; alert(upErr.message); return }
   const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fn)
-  const { data: updated } = await supabase.from('profiles')
-    .update({ custom_badge_url: publicUrl, updated_at: new Date().toISOString() })
-    .eq('id', authUser.value.id).select().maybeSingle()
+  const { data: updated } = await api.patch('/me', { custom_badge_url: publicUrl })
   if (updated) profile.value.custom_badge_url = updated.custom_badge_url
   saving.value = false
   e.target.value = ''
@@ -245,9 +212,7 @@ async function uploadCustomBadge(e) {
 
 async function removeCustomBadge() {
   saving.value = true
-  await supabase.from('profiles')
-    .update({ custom_badge_url: null, updated_at: new Date().toISOString() })
-    .eq('id', authUser.value.id)
+  await api.patch('/me', { custom_badge_url: null })
   profile.value.custom_badge_url = null
   saving.value = false
 }
@@ -276,11 +241,7 @@ const permStatus       = ref(getPermissionStatus())
 async function fetchNotifPrefs() {
   const session = getCurrentSession()
   if (!session?.user) return
-  const { data } = await supabase
-    .from('notification_preferences')
-    .select('messages, groups')
-    .eq('user_id', session.user.id)
-    .maybeSingle()
+  const { data } = await api.get('/me/notification-preferences')
   if (data) {
     notifPrefs.value = {
       messages: data.messages ?? true,
@@ -300,11 +261,10 @@ async function saveNotifPrefs() {
   if (!session?.user) return
   notifPrefsSaving.value = true
   notifPrefsSaved.value = false
-  const { error } = await supabase.from('notification_preferences').upsert({
-    user_id:  session.user.id,
+  const { error } = await api.put('/me/notification-preferences', {
     messages: notifPrefs.value.messages,
     groups:   notifPrefs.value.groups,
-  }, { onConflict: 'user_id' })
+  })
   notifPrefsSaving.value = false
   if (!error) {
     notifPrefsSaved.value = true

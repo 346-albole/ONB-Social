@@ -46,6 +46,12 @@ const router = createRouter({
 const authInitPromise = initAuth()
 
 router.beforeEach(async (to, from, next) => {
+  // Already signed in → no need for the sign-in page
+  if (to.name === 'auth') {
+    await authInitPromise
+    if (getCurrentSession()) { next('/'); return }
+  }
+
   // Always allow public routes
   if (!to.meta.requiresAuth) { next(); return }
 
@@ -54,8 +60,8 @@ router.beforeEach(async (to, from, next) => {
 
   const session = getCurrentSession()
 
-  // No session → sign-in page
-  if (!session) { next('/auth'); return }
+  // No session → sign-in page (retour à la page demandée après connexion)
+  if (!session) { next({ path: '/auth', query: to.fullPath !== '/' ? { redirect: to.fullPath } : {} }); return }
 
   next()
 })

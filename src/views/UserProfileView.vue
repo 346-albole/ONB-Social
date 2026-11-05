@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout } from '../lib/withTimeout'
 
@@ -38,39 +38,18 @@ onMounted(async () => {
   }
 
   try {
-    const [profileRes, postsRes, fcRes, ingRes] = await Promise.all([
-      withTimeout(
-        supabase.from('profiles')
-          .select('id, username, avatar_url, bio, is_premium, is_official, username_color, banner_color, banner_url, custom_badge_url, is_anonymous')
-          .eq('id', userId).maybeSingle(),
-        8000
-      ),
-      withTimeout(
-        supabase.from('posts').select('*, likes(count)').eq('user_id', userId).order('created_at', { ascending: false }),
-        10000
-      ),
-      withTimeout(
-        supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', userId),
-        8000
-      ),
-      withTimeout(
-        supabase.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id', userId),
-        8000
-      ),
+    // Profil public + compteurs + is_following en un appel
+    const [profileRes, postsRes] = await Promise.all([
+      withTimeout(api.get(`/profiles/${userId}`), 8000),
+      withTimeout(api.get(`/profiles/${userId}/posts`), 10000),
     ])
 
     if (!profileRes?.data) { notFound.value = true; return }
     profile.value        = profileRes.data
     userPosts.value      = postsRes?.data || []
-    followersCount.value = fcRes?.count  || 0
-    followingCount.value = ingRes?.count || 0
-
-    // Check if current user follows this profile
-    if (currentUserId.value) {
-      const { data: fRow } = await supabase.from('follows')
-        .select('id').eq('follower_id', currentUserId.value).eq('following_id', userId).maybeSingle()
-      isFollowing.value = !!fRow
-    }
+    followersCount.value = profileRes.data.followers_count || 0
+    followingCount.value = profileRes.data.following_count || 0
+    isFollowing.value    = !!profileRes.data.is_following
   } catch (e) {
     console.warn('UserProfileView load error:', e)
     notFound.value = true
@@ -86,13 +65,11 @@ async function toggleFollow() {
   try {
     const targetId = route.params.userId
     if (isFollowing.value) {
-      await supabase.from('follows')
-        .delete().eq('follower_id', currentUserId.value).eq('following_id', targetId)
+      await api.del(`/profiles/${targetId}/follow`)
       followersCount.value = Math.max(0, followersCount.value - 1)
       isFollowing.value = false
     } else {
-      await supabase.from('follows')
-        .insert({ follower_id: currentUserId.value, following_id: targetId })
+      await api.put(`/profiles/${targetId}/follow`)
       followersCount.value += 1
       isFollowing.value = true
     }
@@ -115,15 +92,11 @@ async function openModal(type) {
   try {
     const userId = route.params.userId
     if (type === 'followers') {
-      const { data } = await supabase.from('follows')
-        .select('follower:profiles!follower_id(id, username, avatar_url, is_premium, is_official)')
-        .eq('following_id', userId)
-      followersList.value = data?.map(r => r.follower).filter(Boolean) || []
+      const { data } = await api.get(`/profiles/${userId}/followers`)
+      followersList.value = data || []
     } else {
-      const { data } = await supabase.from('follows')
-        .select('following:profiles!following_id(id, username, avatar_url, is_premium, is_official)')
-        .eq('follower_id', userId)
-      followingList.value = data?.map(r => r.following).filter(Boolean) || []
+      const { data } = await api.get(`/profiles/${userId}/following`)
+      followingList.value = data || []
     }
   } catch (e) {
     console.warn('openModal error:', e)

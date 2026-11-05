@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { checkModeration } from '../lib/moderation'
@@ -51,13 +52,7 @@ function closeLightbox() { lightboxUrl.value = null }
 const _safeLoad = makeSafeLoader(loading)
 async function fetchPosts() {
   await _safeLoad(async () => {
-    const { data } = await withTimeout(
-      supabase
-        .from('posts')
-        .select(`*, profiles(id, username, avatar_url, is_premium, is_official, username_color, is_anonymous), likes(id, user_id), comments(id, content, created_at, profiles(username, is_official))`)
-        .order('created_at', { ascending: false }),
-      10000
-    )
+    const { data } = await withTimeout(api.get('/posts', { query: { kind: 'feed' } }), 10000, {})
     if (data) {
       posts.value = data
       if (currentUser.value) {
@@ -80,11 +75,11 @@ async function toggleLike(postId) {
   if (isLiked) {
     likedPosts.value.delete(postId)
     if (post) post.likes = (post.likes || []).filter(l => l.user_id !== currentUser.value.id)
-    await supabase.from('likes').delete().match({ user_id: currentUser.value.id, post_id: postId })
+    await api.del(`/posts/${postId}/like`)
   } else {
     likedPosts.value.add(postId)
     if (post) post.likes = [...(post.likes || []), { user_id: currentUser.value.id, post_id: postId }]
-    await supabase.from('likes').insert({ user_id: currentUser.value.id, post_id: postId })
+    await api.put(`/posts/${postId}/like`)
   }
   // Short delay so realtime events for this action are ignored
   setTimeout(() => pendingLikes.delete(postId), 1500)
@@ -93,9 +88,8 @@ async function toggleLike(postId) {
 async function deletePost(postId) {
   if (!confirm('Delete this post?')) return
   deletingId.value = postId
-  await supabase.from('likes').delete().eq('post_id', postId)
-  await supabase.from('comments').delete().eq('post_id', postId)
-  const { error } = await supabase.from('posts').delete().eq('id', postId).eq('user_id', currentUser.value.id)
+  // Likes et commentaires sont supprimés en cascade côté base
+  const { error } = await api.del(`/posts/${postId}`)
   if (!error) posts.value = posts.value.filter(p => p.id !== postId)
   else alert('Could not delete post: ' + error.message)
   deletingId.value = null
@@ -111,7 +105,7 @@ async function sendComment(postId) {
     if (mod.banned) router.push('/auth')
     else {
       commentText.value[postId] = ''
-      const { data } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
+      const { data } = await api.get('/me')
       if (data) Object.assign(userProfile.value, data)
     }
     return
@@ -145,11 +139,7 @@ async function sendComment(postId) {
 
   lastCommentTime.value[postId] = now
 
-  const { data: newComment } = await supabase
-    .from('comments')
-    .insert({ user_id: currentUser.value.id, post_id: postId, content })
-    .select('id, content, created_at, profiles(username, is_official)')
-    .single()
+  const { data: newComment } = await api.post(`/posts/${postId}/comments`, { content })
   if (newComment) {
     if (post) post.comments = [...(post.comments || []), newComment]
     expandedComments.value[postId] = true
@@ -158,7 +148,7 @@ async function sendComment(postId) {
 }
 
 async function deleteComment(postId, commentId) {
-  await supabase.from('comments').delete().eq('id', commentId)
+  await api.del(`/comments/${commentId}`)
   const post = posts.value.find(p => p.id === postId)
   if (post) post.comments = post.comments.filter(c => c.id !== commentId)
 }
@@ -183,7 +173,7 @@ async function uploadPost() {
     if (mod.banned) router.push('/auth')
     else {
       caption.value = ''
-      const { data } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
+      const { data } = await api.get('/me')
       if (data) Object.assign(userProfile.value, data)
     }
     return
@@ -205,7 +195,7 @@ async function uploadPost() {
     const { error: uploadErr } = await supabase.storage.from('media').upload(fileName, file.value)
     if (uploadErr) throw uploadErr
     const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName)
-    const { data: insertedPost, error: insertErr } = await supabase.from('posts').insert([{ user_id: currentUser.value.id, caption: caption.value, media_url: publicUrl }]).select().single()
+    const { error: insertErr } = await api.post('/posts', { caption: caption.value, media_url: publicUrl })
     if (insertErr) throw insertErr
 
     caption.value = ''
@@ -265,7 +255,7 @@ async function recordView(postId) {
   if (p) p.views = (Number(p.views) || 0) + 1
 
   try {
-    await supabase.rpc('increment_post_views', { post_id: postId })
+    await api.post(`/posts/${postId}/views`)
   } catch (e) {
     console.warn('recordView error:', e)
   }
@@ -275,7 +265,7 @@ onMounted(async () => {
   const session = getCurrentSession()
   currentUser.value = session?.user || null
   if (currentUser.value) {
-    const { data } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
+    const { data } = await api.get('/me')
     userProfile.value = data
   }
   fetchPosts()
@@ -340,23 +330,13 @@ onMounted(async () => {
 
   // Load admin announcements
   try {
-    const { data: ann } = await supabase
-      .from('announcements')
-      .select('*')
-      .eq('active', true)
-      .order('created_at', { ascending: false })
-      .limit(3)
+    const { data: ann } = await api.get('/announcements/active')
     adminAnnouncements.value = ann || []
   } catch {}
 
   // Load latest admin broadcast (HTML/JS)
   try {
-    const { data: bc } = await supabase
-      .from('admin_broadcasts')
-      .select('*')
-      .eq('active', true)
-      .order('created_at', { ascending: false })
-      .limit(1)
+    const { data: bc } = await api.get('/broadcasts/active')
     if (bc?.[0]) {
       adminBroadcast.value = bc[0]
       // Execute JS if present

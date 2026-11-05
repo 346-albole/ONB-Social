@@ -1,8 +1,10 @@
 <script setup>
+// Page de retour du fournisseur d'identité (redirect URI MSAL : <origin>/auth/callback).
+// auth.init() traite la réponse de redirection (handleRedirectPromise côté MSAL) ;
+// avec le fournisseur dev, il suffit de rediriger.
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { supabase } from '../lib/supabaseClient'
-import { updateSession } from '../lib/authStore'
+import { auth } from '../lib/auth'
 
 const router = useRouter()
 const status = ref('verifying') // 'verifying' | 'success' | 'error'
@@ -10,39 +12,13 @@ const errorMsg = ref('')
 
 onMounted(async () => {
   try {
-    // Supabase appends tokens as URL hash fragments after email confirmation
-    // exchangeCodeForSession handles both PKCE code and hash tokens
-    const hashParams = new URLSearchParams(window.location.hash.slice(1))
-    const queryParams = new URLSearchParams(window.location.search)
-
-    const accessToken  = hashParams.get('access_token')
-    const refreshToken = hashParams.get('refresh_token')
-    const type         = hashParams.get('type') || queryParams.get('type')
-    const code         = queryParams.get('code')
-
-    if (code) {
-      // PKCE flow — exchange code for session
-      const { data, error } = await supabase.auth.exchangeCodeForSession(code)
-      if (error) throw error
-      updateSession('SIGNED_IN', data.session)
-      status.value = 'success'
-      setTimeout(() => router.replace('/'), 2000)
-    } else if (accessToken) {
-      // Implicit flow — set session directly from hash tokens
-      const { data, error } = await supabase.auth.setSession({
-        access_token: accessToken,
-        refresh_token: refreshToken || '',
-      })
-      if (error) throw error
-      updateSession('SIGNED_IN', data.session)
-      status.value = 'success'
-      setTimeout(() => router.replace('/'), 2000)
-    } else {
-      throw new Error('No verification token found in URL. The link may have expired.')
-    }
+    await auth.init()
+    if (!auth.user.value) throw new Error('Sign-in was not completed. Please try again.')
+    status.value = 'success'
+    setTimeout(() => router.replace('/'), 800)
   } catch (err) {
     status.value = 'error'
-    errorMsg.value = err.message || 'Verification failed. The link may have expired.'
+    errorMsg.value = err.message || 'Sign-in failed.'
   }
 })
 </script>
@@ -54,8 +30,8 @@ onMounted(async () => {
       <!-- Verifying -->
       <template v-if="status === 'verifying'">
         <div class="cb-spinner"></div>
-        <h2 class="cb-title">Verifying your email…</h2>
-        <p class="cb-sub">Just a moment while we confirm your account.</p>
+        <h2 class="cb-title">Signing you in…</h2>
+        <p class="cb-sub">Just a moment while we complete your sign-in.</p>
       </template>
 
       <!-- Success -->
@@ -65,8 +41,8 @@ onMounted(async () => {
             <polyline points="20 6 9 17 4 12"/>
           </svg>
         </div>
-        <h2 class="cb-title">Email verified!</h2>
-        <p class="cb-sub">Your account is now active. Taking you to ONBSocial…</p>
+        <h2 class="cb-title">Signed in!</h2>
+        <p class="cb-sub">Taking you to ONBSocial…</p>
         <div class="cb-progress">
           <div class="cb-progress-bar"></div>
         </div>
@@ -80,7 +56,7 @@ onMounted(async () => {
             <line x1="6" y1="6" x2="18" y2="18"/>
           </svg>
         </div>
-        <h2 class="cb-title">Verification failed</h2>
+        <h2 class="cb-title">Sign-in failed</h2>
         <p class="cb-sub">{{ errorMsg }}</p>
         <button class="cb-btn" @click="$router.push('/auth')">
           Back to Sign In

@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, nextTick, computed, watch } from 'vue'
 import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 import { sessionRef } from '../lib/authStore'
 import {
   getAiResponse,
@@ -92,7 +93,7 @@ onMounted(async () => {
 
   // Load user profile & stats
   if (sessionRef.value?.user) {
-    const { data } = await supabase.from('profiles').select('*').eq('id', sessionRef.value.user.id).maybeSingle()
+    const { data } = await api.get('/me')
     profile.value = data
     await refreshAiContext(data)
 

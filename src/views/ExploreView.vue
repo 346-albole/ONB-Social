@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { useRouter } from 'vue-router'
@@ -31,15 +31,11 @@ async function fetchUsers() {
     if (!user) return
 
     const [profilesRes, followsRes] = await Promise.all([
-      withTimeout(supabase.from('profiles')
-        .select('id, username, avatar_url, bio, is_premium, is_official, username_color, custom_badge_url, is_anonymous')
-        .neq('id', user.id), 10000),
-      withTimeout(supabase.from('follows')
-        .select('following_id')
-        .eq('follower_id', user.id), 10000),
+      withTimeout(api.get('/profiles', { query: { exclude_self: true } }), 10000),
+      withTimeout(api.get('/me/social'), 10000),
     ])
 
-    followingIds.value = followsRes?.data?.map(f => f.following_id) || []
+    followingIds.value = followsRes?.data?.following_ids || []
     allUsers.value = profilesRes?.data || []
   })
 }
@@ -51,17 +47,13 @@ async function toggleFollow(userId) {
   if (alreadyFollowing) {
     // Optimistic
     followingIds.value = followingIds.value.filter(id => id !== userId)
-    const { error } = await supabase.from('follows')
-      .delete()
-      .eq('follower_id', currentUser.value.id)
-      .eq('following_id', userId)
+    const { error } = await api.del(`/profiles/${userId}/follow`)
     // Rollback if failed
     if (error) followingIds.value = [...followingIds.value, userId]
   } else {
     // Optimistic
     followingIds.value = [...followingIds.value, userId]
-    const { error } = await supabase.from('follows')
-      .insert({ follower_id: currentUser.value.id, following_id: userId })
+    const { error } = await api.put(`/profiles/${userId}/follow`)
     // Rollback if failed
     if (error) followingIds.value = followingIds.value.filter(id => id !== userId)
   }
@@ -72,9 +64,7 @@ async function openUser(user) {
   loadingPosts.value = true
   try {
     const result = await withTimeout(
-      supabase.from('posts').select('*, likes(count)')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false }),
+      api.get(`/profiles/${user.id}/posts`),
       8000
     )
     selectedUserPosts.value = result?.data || []

@@ -8,6 +8,7 @@ import devAuthRoutes from './auth/devProvider.js'
 import meRoutes from './routes/me.js'
 import profileRoutes from './routes/profiles.js'
 import postRoutes, { commentRoutes } from './routes/posts.js'
+import contentRoutes from './routes/content.js'
 import staticFrontend from './static.js'
 
 export async function buildApp() {
@@ -36,6 +37,7 @@ export async function buildApp() {
     await api.register(profileRoutes, { prefix: '/profiles' })
     await api.register(postRoutes, { prefix: '/posts' })
     await api.register(commentRoutes, { prefix: '/comments' })
+    await api.register(contentRoutes)
 
     // 404 JSON pour toute route /api inconnue (pas de fallback SPA ici).
     api.setNotFoundHandler(() => { throw notFound('Route inconnue') })

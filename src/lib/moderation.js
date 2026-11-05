@@ -1,4 +1,4 @@
-import { supabase } from './supabaseClient'
+import { api } from './api'
 
 const forbiddenWordsCacheTtlMs = 15000
 const emptyForbiddenWordsCacheTtlMs = 5000
@@ -44,10 +44,7 @@ const buildForbiddenMatchers = (forbiddenWords) => (forbiddenWords || [])
 
 const fetchForbiddenWords = async () => {
   if (fetchForbiddenWordsPromise) return fetchForbiddenWordsPromise
-  fetchForbiddenWordsPromise = supabase
-    .from('forbidden_words')
-    .select('word')
-    .eq('enabled', true)
+  fetchForbiddenWordsPromise = api.get('/moderation/forbidden-words')
 
   try {
     return await fetchForbiddenWordsPromise
@@ -95,10 +92,7 @@ export async function checkModeration(text, profile) {
 
     if (currentWarnings === 0) {
       // First warning
-      await supabase
-        .from('profiles')
-        .update({ warnings_count: 1 })
-        .eq('id', profile.id)
+      await api.patch('/me', { warnings_count: 1 })
       
       return {
         blocked: true,
@@ -106,10 +100,7 @@ export async function checkModeration(text, profile) {
       }
     } else {
       // Second strike: Ban
-      await supabase
-        .from('profiles')
-        .update({ is_banned: true })
-        .eq('id', profile.id)
+      await api.patch('/me', { is_banned: true })
       
       return {
         blocked: true,

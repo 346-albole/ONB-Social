@@ -1,42 +1,27 @@
 <script setup>
 import { ref } from 'vue'
-import { supabase } from '../lib/supabaseClient'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
+import { auth } from '../lib/auth'
 
 const router = useRouter()
+const route = useRoute()
 const loading = ref(false)
-const isSignUp = ref(false)
-const email = ref('')
-const password = ref('')
 const username = ref('')
 const errorMsg = ref('')
 
-const toggleMode = () => {
-  isSignUp.value = !isSignUp.value
-  errorMsg.value = ''
-}
+// 'username' : fournisseur dev (nom d'utilisateur seul, compte créé à la
+// première connexion) — 'redirect' : fournisseur d'identité (Microsoft Entra ID).
+const loginMode = auth.loginMode
 
 const handleAuth = async () => {
   loading.value = true
   errorMsg.value = ''
   try {
-    if (isSignUp.value) {
-      const { data, error } = await supabase.auth.signUp({
-        email: email.value,
-        password: password.value,
-        options: {
-          data: { display_name: username.value },
-        },
-      })
-      if (error) throw error
-      if (data.session) router.push('/')
-    } else {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: email.value,
-        password: password.value,
-      })
-      if (error) throw error
-      router.push('/')
+    await auth.login(loginMode === 'username' ? { username: username.value.trim() } : {})
+    // En mode redirection, le navigateur quitte la page ; le retour passe par /auth/callback.
+    if (loginMode === 'username') {
+      const target = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') ? route.query.redirect : '/'
+      router.push(target)
     }
   } catch (err) {
     errorMsg.value = err.message
@@ -62,37 +47,22 @@ const handleAuth = async () => {
 
     <div class="auth-right">
       <div class="auth-card">
-        <h2 class="card-title">{{ isSignUp ? 'Create account' : 'Welcome back' }}</h2>
-        <p class="card-sub">{{ isSignUp ? 'Join the ONBSocial community' : 'Sign in to continue' }}</p>
+        <h2 class="card-title">Welcome back</h2>
+        <p class="card-sub">{{ loginMode === 'username' ? 'Sign in to continue — a new account is created on first sign-in' : 'Sign in to continue' }}</p>
 
         <div class="error-msg" v-if="errorMsg">{{ errorMsg }}</div>
 
         <form @submit.prevent="handleAuth" class="auth-form">
-          <div v-if="isSignUp" class="field">
+          <div v-if="loginMode === 'username'" class="field">
             <label>Username</label>
-            <input v-model="username" type="text" placeholder="yourhandle" required />
-          </div>
-          <div class="field">
-            <label>Email</label>
-            <input v-model="email" type="email" placeholder="you@example.com" required />
-          </div>
-          <div class="field">
-            <label>Password</label>
-            <input v-model="password" type="password" placeholder="••••••••" required />
+            <input v-model="username" type="text" placeholder="yourhandle" pattern="[A-Za-z0-9_.\-]+" maxlength="40" autocomplete="username" required />
           </div>
 
           <button type="submit" :disabled="loading" class="submit-btn">
             <span v-if="loading" class="btn-spinner"></span>
-            {{ loading ? 'Processing…' : isSignUp ? 'Create Account' : 'Sign In' }}
+            {{ loading ? 'Processing…' : loginMode === 'username' ? 'Sign In' : 'Sign in with Microsoft' }}
           </button>
         </form>
-
-        <div class="toggle">
-          <span @click="toggleMode()">
-            {{ isSignUp ? 'Already have an account? ' : "Don't have an account? " }}
-            <strong>{{ isSignUp ? 'Sign in' : 'Sign up' }}</strong>
-          </span>
-        </div>
       </div>
     </div>
   </div>

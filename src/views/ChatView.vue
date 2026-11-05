@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { triggerNotification } from '../lib/pushNotifications'
@@ -202,7 +203,7 @@ async function sendMessage() {
     else {
       newMessage.value = ''
       // Refresh local profile to get updated warning count
-      const { data } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
+      const { data } = await api.get('/me')
       if (data) Object.assign(currentProfile.value, data)
     }
     return

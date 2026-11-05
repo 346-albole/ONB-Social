@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, onActivated, nextTick, computed } from 'vue'
 import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout } from '../lib/withTimeout'
 import { onlineUsers } from '../stores/presence'
@@ -140,7 +141,7 @@ async function sendMessage() {
     if (mod.banned) router.push('/auth')
     else {
       newMessage.value = ''
-      const { data } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
+      const { data } = await api.get('/me')
       if (data) Object.assign(currentProfile.value, data)
     }
     return

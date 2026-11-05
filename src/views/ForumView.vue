@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { useRouter } from 'vue-router'
@@ -242,7 +243,7 @@ async function sendComment() {
     if (mod.banned) router.push('/auth')
     else {
       newComment.value = ''
-      const { data } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
+      const { data } = await api.get('/me')
       if (data) Object.assign(currentProfile.value, data)
     }
     return
@@ -294,7 +295,7 @@ async function createPost() {
     if (modTitle.banned) router.push('/auth')
     else {
       newTitle.value = ''
-      const { data } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
+      const { data } = await api.get('/me')
       if (data) Object.assign(currentProfile.value, data)
     }
     return
@@ -305,7 +306,7 @@ async function createPost() {
     if (modContent.banned) router.push('/auth')
     else {
       newContent.value = ''
-      const { data } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
+      const { data } = await api.get('/me')
       if (data) Object.assign(currentProfile.value, data)
     }
     return

@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 
@@ -26,15 +27,7 @@ function formatCount(num) {
 const _safeLoad = makeSafeLoader(loading)
 async function fetchReels() {
   await _safeLoad(async () => {
-    const { data } = await withTimeout(
-      supabase
-        .from('posts')
-        .select('*, profiles(id, username, avatar_url, is_official, is_premium, username_color, custom_badge_url, is_anonymous), likes(id, user_id), comments(id, content, profiles(username))')
-        .or('media_url.ilike.%.mp4,media_url.ilike.%.webm,media_url.ilike.%.mov,media_url.ilike.%.m4v')
-        .order('created_at', { ascending: false })
-        .limit(30),
-      10000
-    )
+    const { data } = await withTimeout(api.get('/posts', { query: { kind: 'reels', limit: 30 } }), 10000, {})
     if (data) {
       originalReels.value = data
       reels.value = [...data]
@@ -62,22 +55,20 @@ async function toggleLike(postId) {
     postsToUpdate.forEach(p => {
       p.likes = (p.likes || []).filter(l => l.user_id !== currentUser.value.id)
     })
-    await supabase.from('likes').delete().match({ user_id: currentUser.value.id, post_id: postId })
+    await api.del(`/posts/${postId}/like`)
   } else {
     likedPosts.value.add(postId)
     postsToUpdate.forEach(p => {
       p.likes = [...(p.likes || []), { user_id: currentUser.value.id }]
     })
-    await supabase.from('likes').insert({ user_id: currentUser.value.id, post_id: postId })
+    await api.put(`/posts/${postId}/like`)
   }
 }
 
 async function sendComment(postId) {
   const content = commentText.value[postId]?.trim()
   if (!content || !currentUser.value) return
-  const { data: c } = await supabase
-    .from('comments').insert({ user_id: currentUser.value.id, post_id: postId, content })
-    .select('id, content, profiles(username)').single()
+  const { data: c } = await api.post(`/posts/${postId}/comments`, { content })
   
   const postsToUpdate = reels.value.filter(p => p.id === postId)
   if (postsToUpdate.length && c) {
@@ -106,7 +97,7 @@ async function uploadReel(e) {
     if (upErr) throw upErr
 
     const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName)
-    const { error: insertErr } = await supabase.from('posts').insert([{ user_id: currentUser.value.id, media_url: publicUrl, caption: '' }])
+    const { error: insertErr } = await api.post('/posts', { media_url: publicUrl, caption: '' })
     if (insertErr) throw insertErr
     e.target.value = ''
     fetchReels()
@@ -159,7 +150,7 @@ async function recordView(postId) {
   if (r) r.views = (Number(r.views) || 0) + 1
 
   try {
-    await supabase.rpc('increment_post_views', { post_id: postId })
+    await api.post(`/posts/${postId}/views`)
   } catch (e) {
     console.warn('recordView error:', e)
   }

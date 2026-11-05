@@ -52,6 +52,42 @@ export default async function meRoutes(app) {
     return row
   })
 
+  // Préférences de notification (ProfileView). null si jamais enregistrées.
+  app.get('/notification-preferences', async (request) => {
+    return request.tx(async (c) => {
+      const { rows } = await c.query(
+        'SELECT * FROM public.notification_preferences WHERE user_id = $1', [request.user.id])
+      return rows[0] ?? null
+    })
+  })
+
+  app.put('/notification-preferences', {
+    schema: {
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        minProperties: 1,
+        properties: Object.fromEntries(
+          ['likes', 'comments', 'follows', 'mentions', 'messages', 'groups'].map((k) => [k, { type: 'boolean' }]),
+        ),
+      },
+    },
+  }, async (request) => {
+    const keys = Object.keys(request.body)
+    const values = keys.map((k) => request.body[k])
+    return request.tx(async (c) => {
+      const { rows } = await c.query(
+        `INSERT INTO public.notification_preferences (user_id, ${keys.join(', ')}, updated_at)
+         VALUES ($1, ${keys.map((_, i) => `$${i + 2}`).join(', ')}, now())
+         ON CONFLICT (user_id) DO UPDATE SET
+           ${keys.map((k) => `${k} = EXCLUDED.${k}`).join(', ')}, updated_at = now()
+         RETURNING *`,
+        [request.user.id, ...values],
+      )
+      return rows[0]
+    })
+  })
+
   // Données de la barre latérale (App.vue) : suivis, abonnés, amis mutuels.
   app.get('/social', async (request) => {
     return request.tx(async (c) => {
