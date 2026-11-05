@@ -40,3 +40,9 @@ __screenshots__/
 
 # Environnement local
 .env
+
+# Clé de signature du fournisseur d'auth dev
+api/.dev-auth/
+
+# Médias uploadés en local
+data/
