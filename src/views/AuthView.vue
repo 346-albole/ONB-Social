@@ -26,31 +26,16 @@ const handleAuth = async () => {
         password: password.value,
         options: {
           data: { display_name: username.value },
-          // Redirect back to our callback handler after email confirmation
-          emailRedirectTo: `${window.location.origin}/auth/callback`,
         },
       })
       if (error) throw error
-      // If Supabase returns a session immediately it means email confirmation
-      // is disabled in the project — just go straight to the app
-      if (data.session) {
-        router.push('/')
-      } else {
-        // Email confirmation required — show the verify page
-        router.push({ name: 'verify-email', query: { email: email.value } })
-      }
+      if (data.session) router.push('/')
     } else {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { error } = await supabase.auth.signInWithPassword({
         email: email.value,
         password: password.value,
       })
       if (error) throw error
-      // Block unverified NEW accounts (old accounts have email_confirmed_at set)
-      if (data.user && !data.user.email_confirmed_at) {
-        await supabase.auth.signOut()
-        router.push({ name: 'verify-email', query: { email: email.value, mode: 'blocked' } })
-        return
-      }
       router.push('/')
     }
   } catch (err) {

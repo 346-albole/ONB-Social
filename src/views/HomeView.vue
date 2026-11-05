@@ -5,7 +5,6 @@ import { supabase } from '../lib/supabaseClient'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { checkModeration } from '../lib/moderation'
-import { recordAndCheckSpam } from '../lib/spam'
 
 const router = useRouter()
 function goToProfile(userId) {
@@ -154,18 +153,6 @@ async function sendComment(postId) {
   if (newComment) {
     if (post) post.comments = [...(post.comments || []), newComment]
     expandedComments.value[postId] = true
-
-    // Anti-spam check
-    const spam = await recordAndCheckSpam(userProfile.value, newComment.id, 'comments', content)
-    if (spam.blocked) {
-      alert(spam.reason)
-      if (spam.banned) router.push('/auth')
-      else {
-        // Refresh local profile for warning count
-        const { data: p } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
-        if (p) Object.assign(userProfile.value, p)
-      }
-    }
   }
   commentText.value[postId] = ''
 }
@@ -220,17 +207,6 @@ async function uploadPost() {
     const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName)
     const { data: insertedPost, error: insertErr } = await supabase.from('posts').insert([{ user_id: currentUser.value.id, caption: caption.value, media_url: publicUrl }]).select().single()
     if (insertErr) throw insertErr
-    
-    // Anti-spam check
-    const spam = await recordAndCheckSpam(userProfile.value, insertedPost.id, 'posts', caption.value)
-    if (spam.blocked) {
-      alert(spam.reason)
-      if (spam.banned) router.push('/auth')
-      else {
-        const { data: p } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
-        if (p) Object.assign(userProfile.value, p)
-      }
-    }
 
     caption.value = ''
     file.value = null

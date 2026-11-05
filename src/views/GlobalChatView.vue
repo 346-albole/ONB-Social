@@ -7,7 +7,6 @@ import { onlineUsers } from '../stores/presence'
 import { t } from '../lib/i18n'
 import { useRouter } from 'vue-router'
 import { checkModeration } from '../lib/moderation'
-import { recordAndCheckSpam } from '../lib/spam'
 
 const currentUser    = ref(null)
 
@@ -159,17 +158,6 @@ async function sendMessage() {
       messages.value.push(data)
       await nextTick()
       scrollToBottom()
-
-      // Anti-spam check
-      const spam = await recordAndCheckSpam(currentProfile.value, data.id, 'global_messages', msg)
-      if (spam.blocked) {
-        alert(spam.reason)
-        if (spam.banned) router.push('/auth')
-        else {
-          const { data: p } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
-          if (p) Object.assign(currentProfile.value, p)
-        }
-      }
     } else if (error) {
       newMessage.value = msg
     }

@@ -5,7 +5,6 @@ import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { useRouter } from 'vue-router'
 import { checkModeration } from '../lib/moderation'
-import { recordAndCheckSpam } from '../lib/spam'
 
 const router = useRouter()
 function goToProfile(userId) {
@@ -262,17 +261,6 @@ async function sendComment() {
     if (activePost.value.forum_comments?.[0]) {
       activePost.value.forum_comments[0].count = (activePost.value.forum_comments[0].count || 0) + 1
     }
-
-    // Anti-spam check
-    const spam = await recordAndCheckSpam(currentProfile.value, data.id, 'forum_comments', content)
-    if (spam.blocked) {
-      alert(spam.reason)
-      if (spam.banned) router.push('/auth')
-      else {
-        const { data: p } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
-        if (p) Object.assign(currentProfile.value, p)
-      }
-    }
   }
   newComment.value = ''
   replyTo.value = null
@@ -343,17 +331,6 @@ async function createPost() {
 
   if (!error && data) {
     posts.value.unshift(data)
-    
-    // Anti-spam check
-    const spam = await recordAndCheckSpam(currentProfile.value, data.id, 'forum_posts', newTitle.value + ' ' + (newContent.value || ''))
-    if (spam.blocked) {
-      alert(spam.reason)
-      if (spam.banned) router.push('/auth')
-      else {
-        const { data: p } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', currentUser.value.id).maybeSingle()
-        if (p) Object.assign(currentProfile.value, p)
-      }
-    }
 
     newTitle.value = ''; newContent.value = ''; newImageFile.value = null; newImagePreview.value = null
     showCreate.value = false

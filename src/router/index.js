@@ -15,7 +15,6 @@ const GlobalChatView   = () => import('../views/GlobalChatView.vue')
 const ForumView        = () => import('../views/ForumView.vue')
 const CoinView         = () => import('../views/CoinView.vue')
 const AiView           = () => import('../views/AiView.vue')
-const VerifyEmailView  = () => import('../views/VerifyEmailView.vue')
 const AuthCallbackView = () => import('../views/AuthCallbackView.vue')
 const UserProfileView  = () => import('../views/UserProfileView.vue')
 
@@ -24,7 +23,6 @@ const router = createRouter({
   routes: [
     // Public routes (no auth needed)
     { path: '/auth',          name: 'auth',          component: AuthView },
-    { path: '/verify-email',  name: 'verify-email',  component: VerifyEmailView },
     { path: '/auth/callback', name: 'auth-callback', component: AuthCallbackView },
 
     // Protected routes
@@ -58,17 +56,6 @@ router.beforeEach(async (to, from, next) => {
 
   // No session → sign-in page
   if (!session) { next('/auth'); return }
-
-  // Email verification check:
-  // Old accounts always have email_confirmed_at (grandfathered).
-  // New accounts must confirm before accessing the app.
-  if (!session.user.email_confirmed_at) {
-    next({
-      name: 'verify-email',
-      query: { email: session.user.email, mode: 'blocked' },
-    })
-    return
-  }
 
   next()
 })

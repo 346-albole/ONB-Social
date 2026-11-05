@@ -6,7 +6,6 @@ import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { triggerNotification } from '../lib/pushNotifications'
 import { checkModeration } from '../lib/moderation'
-import { recordAndCheckSpam } from '../lib/spam'
 
 const route = useRoute()
 const router = useRouter()
@@ -241,18 +240,6 @@ async function insertDM({ content, image_url }) {
     if (idx !== -1) dmMessages.value.splice(idx, 1, data)
     const f = friends.value.find(f => f.id === fid)
     if (f) f.lastMsg = data
-
-    // Anti-spam check
-    const spam = await recordAndCheckSpam(currentProfile.value, data.id, 'messages', content)
-    if (spam.blocked) {
-      alert(spam.reason)
-      if (spam.banned) router.push('/auth')
-      else {
-        // Refresh local profile for warning count
-        const { data: p } = await supabase.from('profiles').select('warnings_count, is_banned').eq('id', uid).maybeSingle()
-        if (p) Object.assign(currentProfile.value, p)
-      }
-    }
   } else if (error) {
     const idx = dmMessages.value.findIndex(m => m.id === tmpId)
     if (idx !== -1) dmMessages.value.splice(idx, 1)

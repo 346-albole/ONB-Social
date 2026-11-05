@@ -85,9 +85,6 @@ onMounted(async () => {
         <button class="cb-btn" @click="$router.push('/auth')">
           Back to Sign In
         </button>
-        <button class="cb-btn-secondary" @click="$router.push('/verify-email')">
-          Resend verification email
-        </button>
       </template>
 
     </div>
