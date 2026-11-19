@@ -17,12 +17,11 @@ const handleAuth = async () => {
   loading.value = true
   errorMsg.value = ''
   try {
-    await auth.login(loginMode === 'username' ? { username: username.value.trim() } : {})
-    // En mode redirection, le navigateur quitte la page ; le retour passe par /auth/callback.
-    if (loginMode === 'username') {
-      const target = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') ? route.query.redirect : '/'
-      router.push(target)
-    }
+    const target = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') ? route.query.redirect : '/'
+    // MSAL : le navigateur part chez Microsoft ; le retour passe par /auth/callback
+    // (page « redirect bridge ») puis revient ici, et le routeur rouvre `target`.
+    await auth.login(loginMode === 'username' ? { username: username.value.trim() } : { redirectTo: target })
+    if (loginMode === 'username') router.push(target)
   } catch (err) {
     errorMsg.value = err.message
   } finally {

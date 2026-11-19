@@ -22,7 +22,9 @@ export default async function staticFrontend(app) {
     setHeaders(reply, filePath) {
       // Les assets Vite sont fingerprintés ; index.html ne doit pas être mis en cache.
       const immutable = filePath.includes(`${path.sep}assets${path.sep}`)
-      reply.header('Cache-Control', immutable ? 'public, max-age=31536000, immutable' : 'no-cache')
+      // Pages HTML autres que index.html (ex. page « redirect bridge » MSAL) : no-store.
+      const extraPage = filePath.endsWith('.html') && path.basename(filePath) !== 'index.html'
+      reply.header('Cache-Control', immutable ? 'public, max-age=31536000, immutable' : extraPage ? 'no-store' : 'no-cache')
     },
   })
 
@@ -32,8 +34,14 @@ export default async function staticFrontend(app) {
       return reply.code(404).send({ error: { code: 'not_found', message: 'Route inconnue' } })
     }
     const target = path.resolve(config.staticDir, rel)
-    if (rel && target.startsWith(config.staticDir + path.sep) && statSync(target, { throwIfNoEntry: false })?.isFile()) {
+    const inside = rel && target.startsWith(config.staticDir + path.sep)
+    if (inside && statSync(target, { throwIfNoEntry: false })?.isFile()) {
       return reply.sendFile(path.relative(config.staticDir, target))
+    }
+    // Pages HTML supplémentaires du build (ex. /auth/callback → auth/callback.html,
+    // page « redirect bridge » MSAL) : jamais en cache, aucun en-tête COOP.
+    if (inside && statSync(`${target}.html`, { throwIfNoEntry: false })?.isFile()) {
+      return reply.sendFile(path.relative(config.staticDir, `${target}.html`))
     }
     return reply.sendFile('index.html')
   })

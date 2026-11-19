@@ -78,6 +78,8 @@ export default async function devAuthRoutes(app) {
       preferred_username: username,
       name: username,
       email,
+      // Même scope qu'un token Entra ID (AUTH_REQUIRED_SCOPE=access_as_user)
+      scp: 'access_as_user',
     })
       .setProtectedHeader({ alg: ALG, kid: publicJwk.kid, typ: 'JWT' })
       .setIssuer(config.auth.issuer)

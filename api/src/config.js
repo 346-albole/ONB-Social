@@ -60,6 +60,8 @@ export const config = {
     userIdClaim: env.AUTH_USER_ID_CLAIM || 'oid',
     // Tolérance d'horloge pour exp/nbf (secondes)
     clockTolerance: Number(env.AUTH_CLOCK_TOLERANCE || 60),
+    // Scope exigé dans le claim `scp` (ex. access_as_user pour Entra ID) ; vide = pas de contrôle
+    requiredScope: env.AUTH_REQUIRED_SCOPE || '',
   },
 
   devAuth: {

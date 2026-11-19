@@ -17,6 +17,15 @@ export default defineConfig({
       '/media': { target: process.env.VITE_API_PROXY_TARGET || 'http://localhost:3000', changeOrigin: true },
     },
   },
+  // Deux pages : la SPA et la page « redirect bridge » MSAL (auth/callback.html).
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        authCallback: fileURLToPath(new URL('./auth/callback.html', import.meta.url)),
+      },
+    },
+  },
   optimizeDeps: {
     exclude: ['@xenova/transformers'],
   },

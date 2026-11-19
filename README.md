@@ -74,7 +74,8 @@ npm run dev
 - API : http://localhost:3000. En dev, Vite relaie `/api` et `/media` vers
   l'API.
 
-Connexion : en mode dev (`DEV_AUTH_ENABLED=true`, `VITE_AUTH_PROVIDER=dev`),
+Connexion : en mode dev (`DEV_AUTH_ENABLED=true`, `VITE_AUTH_PROVIDER=dev`,
+`AUTH_REQUIRED_SCOPE=access_as_user` ou vide),
 l'écran de connexion ne demande qu'un nom d'utilisateur. Le compte est créé à la
 première connexion, et le même nom redonne toujours le même compte. Pour
 devenir admin, voir « Créer un compte admin ».
@@ -132,6 +133,67 @@ En production, les variables sont définies dans les « App settings ».
 La Function timer utilise donc `JOBS_DB_USER`. Elle ne peut rien faire d'autre
 qu'appeler la fonction : `SECURITY DEFINER` l'exécute avec les droits de son
 propriétaire, ce qui lui permet de mettre à jour les profils expirés.
+
+## Authentification Microsoft Entra ID (MSAL)
+
+Le front choisit son fournisseur d'auth au build avec `VITE_AUTH_PROVIDER` :
+
+- `dev` : en local, connexion par simple nom d'utilisateur. Nécessite
+  `DEV_AUTH_ENABLED=true` côté API, ce qui n'est accepté qu'avec `npm run dev`.
+- `msal` : Microsoft Entra ID, flux par redirection avec PKCE
+  (`@azure/msal-browser` v5).
+
+### App registration (une seule, pour la SPA et l'API)
+
+1. **Inscription** : single tenant (« Comptes dans cet annuaire
+   organisationnel uniquement »).
+2. **Authentification → plateforme « Application monopage » (SPA)**, avec les
+   URI de redirection :
+   - `http://localhost:5173/auth/callback` (dev)
+   - `https://<webapp>.azurewebsites.net/auth/callback` (prod)
+3. **Exposer une API** :
+   - URI d'ID d'application `api://<client-id>` ;
+   - scope `access_as_user`, consentement « Administrateurs et utilisateurs ».
+4. **Manifeste** : `"requestedAccessTokenVersion": 2` (champ
+   `api.requestedAccessTokenVersion`). Le token d'accès est alors émis par
+   `https://login.microsoftonline.com/<tenant-id>/v2.0`, avec `aud = <client-id>`.
+5. **Autorisations d'API** : ajouter `access_as_user` de cette même app, et
+   accorder le consentement administrateur si besoin.
+
+Aucun secret n'est nécessaire : la SPA est un client public (PKCE), et l'API
+valide les tokens avec les clés publiques du tenant.
+
+### Variables
+
+| Où | Variable | Valeur |
+|---|---|---|
+| Build du front | `VITE_AUTH_PROVIDER` | `msal` |
+| | `VITE_MSAL_TENANT_ID` / `VITE_MSAL_CLIENT_ID` | ID du tenant / ID d'application (client) |
+| | `VITE_MSAL_API_SCOPE` | optionnel ; défaut `api://<client-id>/access_as_user` |
+| API (App settings) | `AUTH_ISSUER` | `https://login.microsoftonline.com/<tenant-id>/v2.0` |
+| | `AUTH_AUDIENCE` | `<client-id>` |
+| | `AUTH_JWKS_URL` | `https://login.microsoftonline.com/<tenant-id>/discovery/v2.0/keys` |
+| | `AUTH_USER_ID_CLAIM` / `AUTH_REQUIRED_SCOPE` | `oid` / `access_as_user` |
+| | `DEV_AUTH_ENABLED` | `false` (`npm start` refuse de démarrer sinon) |
+
+Les variables `VITE_*` sont injectées **au moment du build**. L'identifiant
+`oid` du compte Entra devient `profiles.id`, et le profil est créé à la
+première requête.
+
+### Page « redirect bridge »
+
+MSAL v5 reçoit la réponse d'Entra ID sur une page dédiée, `auth/callback.html`.
+C'est la deuxième entrée du build Vite. Elle appelle
+`broadcastResponseToMainFrame()` pour transmettre la réponse à la page qui a
+lancé la connexion. L'API la sert à `/auth/callback`, avec
+`Cache-Control: no-store` et sans en-tête COOP, depuis la même origine.
+
+### Temps réel avec MSAL
+
+`GET /api/realtime/negotiate` est authentifié par le token Bearer (MSAL ou dev,
+même validation que le reste de l'API). Il renvoie l'URL du WebSocket et un
+ticket à usage unique, valable 30 s. Le WebSocket s'authentifie avec ce ticket,
+donc le token n'est jamais envoyé sur la socket.
 
 ## Fichiers et temps réel
 
@@ -198,7 +260,9 @@ La liste complète et commentée est dans `.env.example`. Principales variables 
 | `MEDIA_DIR` | Dossier des fichiers uploadés (`/home/data/media` en production) |
 | `STORAGE_PROVIDER`, `MEDIA_PUBLIC_PATH`, `MAX_UPLOAD_MB` | Adaptateur de stockage, préfixe d'URL des médias, taille maximale |
 | `REALTIME_PROVIDER` | Adaptateur temps réel (`ws`) |
-| `VITE_AUTH_PROVIDER` | `dev` ou `msal` (front) |
+| `VITE_AUTH_PROVIDER` | `dev` ou `msal` (front, au build) |
+| `AUTH_REQUIRED_SCOPE` | Scope exigé dans les tokens (`access_as_user`) |
+| `VITE_MSAL_TENANT_ID`, `VITE_MSAL_CLIENT_ID`, `VITE_MSAL_API_SCOPE` | Configuration MSAL (front, au build) |
 
 Aucun secret n'est commité : `.env`, la clé de signature dev (`api/.dev-auth/`)
 et les médias (`data/`) sont ignorés par git.
@@ -215,7 +279,7 @@ api/                 API Fastify
 db/                  schema.sql (schéma consolidé + RLS), seed.sql
 src/                 front Vue
   lib/api.js         client unique de l'API
-  lib/auth/          module d'auth (interface, implémentation dev, squelette MSAL)
+  lib/auth/          module d'auth (interface, fournisseurs dev et MSAL)
   lib/realtime/      client temps réel (interface + WebSocket)
   lib/storage.js     upload de fichiers
 docs/                audit et notes de portage

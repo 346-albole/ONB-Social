@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { initAuth, getCurrentSession } from '../lib/authStore'
+import { auth } from '../lib/auth'
 
 // ── Lazy-load every view for code-splitting & faster initial paint ──────────
 const HomeView         = () => import('../views/HomeView.vue')
@@ -15,7 +16,7 @@ const GlobalChatView   = () => import('../views/GlobalChatView.vue')
 const ForumView        = () => import('../views/ForumView.vue')
 const CoinView         = () => import('../views/CoinView.vue')
 const AiView           = () => import('../views/AiView.vue')
-const AuthCallbackView = () => import('../views/AuthCallbackView.vue')
+
 const UserProfileView  = () => import('../views/UserProfileView.vue')
 
 const router = createRouter({
@@ -23,7 +24,7 @@ const router = createRouter({
   routes: [
     // Public routes (no auth needed)
     { path: '/auth',          name: 'auth',          component: AuthView },
-    { path: '/auth/callback', name: 'auth-callback', component: AuthCallbackView },
+    
 
     // Protected routes
     { path: '/',                name: 'home',         component: HomeView,        meta: { requiresAuth: true } },
@@ -47,9 +48,10 @@ const authInitPromise = initAuth()
 
 router.beforeEach(async (to, from, next) => {
   // Already signed in → no need for the sign-in page
+  // (après un retour MSAL, on rouvre la page demandée avant la connexion)
   if (to.name === 'auth') {
     await authInitPromise
-    if (getCurrentSession()) { next('/'); return }
+    if (getCurrentSession()) { next(auth.consumeRedirectTarget() || '/'); return }
   }
 
   // Always allow public routes

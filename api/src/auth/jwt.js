@@ -32,6 +32,13 @@ export async function verifyAccessToken(token) {
     throw unauthorized(`Token invalide : ${err.code || err.message}`)
   }
 
+  if (config.auth.requiredScope) {
+    const scopes = String(payload.scp || '').split(' ')
+    if (!scopes.includes(config.auth.requiredScope)) {
+      throw unauthorized(`Scope « ${config.auth.requiredScope} » absent du token`)
+    }
+  }
+
   const id = payload[config.auth.userIdClaim]
   if (typeof id !== 'string' || !UUID_RE.test(id)) {
     throw unauthorized(`Claim « ${config.auth.userIdClaim} » absent ou non GUID`)

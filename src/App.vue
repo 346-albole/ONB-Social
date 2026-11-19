@@ -116,7 +116,7 @@ function destroyAdminCommands() {
   commandsSub = null
 }
 
-const isAuth = computed(() => ['auth', 'auth-callback'].includes(route.name))
+const isAuth = computed(() => route.name === 'auth')
 
 // Subscription renewal modal
 const showRenewalModal = ref(false)

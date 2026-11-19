@@ -53,15 +53,15 @@ export function createWebSocketClient() {
     connecting = true
     try {
       const userId = auth.user.value?.id
-      const token = await auth.getAccessToken()
-      if (!token) return
+      if (!userId) return
+      // Négociation authentifiée par le token (dev ou MSAL) → ticket à usage unique
       const { data, error } = await api.get('/realtime/negotiate')
       if (error) throw new Error(error.message)
       if (auth.user.value?.id !== userId) return // l'utilisateur a changé entre-temps
 
       const ws = new WebSocket(toWebSocketUrl(data.url))
       socket = ws
-      ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', token }))
+      ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', ticket: data.ticket }))
       ws.onmessage = (e) => {
         let msg
         try { msg = JSON.parse(e.data) } catch { return }

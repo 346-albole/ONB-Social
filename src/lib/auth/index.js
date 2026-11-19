@@ -3,14 +3,17 @@
  *
  *   await auth.init()          restaure la session (et traite un retour de redirection)
  *   await auth.login(options)  connecte l'utilisateur (dev : { username } ; MSAL : redirection)
- *   await auth.logout()        déconnecte
+ *   await auth.logout()        déconnecte (MSAL : déconnexion Microsoft par redirection)
+ *   await auth.clearSession()  oublie la session locale sans redirection (ex. 401 de l'API)
+ *   auth.consumeRedirectTarget() page à rouvrir après un retour de connexion (MSAL), ou null
  *   await auth.getAccessToken() token Bearer pour l'API, ou null si non connecté
  *   auth.user                  ref Vue : { id, email, username, name } ou null
  *   auth.loginMode             'username' (formulaire dev) | 'redirect' (bouton Microsoft)
  *
  * Fournisseur choisi par VITE_AUTH_PROVIDER : 'dev' (défaut) ou 'msal'.
  * Un fournisseur est un module exportant `createProvider({ setUser })` qui
- * retourne { loginMode, init, login, logout, getAccessToken }.
+ * retourne { loginMode, init, login, logout, clearSession, getAccessToken,
+ * consumeRedirectTarget }.
  */
 import { ref, readonly } from 'vue'
 
@@ -65,6 +68,16 @@ export const auth = {
     const p = await getProvider()
     await p.logout()
     setUser(null)
+  },
+
+  async clearSession() {
+    const p = await getProvider()
+    await p.clearSession()
+    setUser(null)
+  },
+
+  consumeRedirectTarget() {
+    return provider?.consumeRedirectTarget?.() ?? null
   },
 
   async getAccessToken() {

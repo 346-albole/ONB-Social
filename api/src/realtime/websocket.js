@@ -1,8 +1,13 @@
 // Temps réel par WebSocket, intégré à l'API (même serveur, même port).
 //
+// Négociation : GET /api/realtime/negotiate, authentifié par le token Bearer
+// (dev ou Entra ID/MSAL, même validation que le reste de l'API), renvoie
+// { url, ticket }. Le ticket est à usage unique et valable 30 s.
+//
 // Protocole (messages JSON) :
 //   client → serveur
-//     { type: 'auth', token }                 première trame obligatoire (10 s max)
+//     { type: 'auth', ticket }                première trame obligatoire (10 s max)
+//     { type: 'auth', token }                 alternative : token Bearer directement
 //     { type: 'subscribe', channel }
 //     { type: 'unsubscribe', channel }
 //     { type: 'presence:track' } / { type: 'presence:untrack' }
@@ -13,11 +18,13 @@
 //
 // Présence : canal `presence`, événement `sync` avec { online: [userId…] }.
 // Limite : état en mémoire, valable pour une seule instance (voir PORTAGE_AZURE.md).
+import { randomBytes } from 'node:crypto'
 import websocket from '@fastify/websocket'
 import { bearerToken, verifyAccessToken } from '../auth/jwt.js'
 import { ensureProfile } from '../auth/profile.js'
 
 const AUTH_TIMEOUT_MS = 10_000
+const TICKET_TTL_MS = 30_000
 const HEARTBEAT_MS = 30_000
 
 export function createWebSocketRealtime({ log, canSubscribe }) {
@@ -25,6 +32,23 @@ export function createWebSocketRealtime({ log, canSubscribe }) {
   const channels = new Map()
   /** @type {Map<string, number>} userId → nombre de connexions « présentes » */
   const present = new Map()
+  /** @type {Map<string, { identity: object, expires: number }>} tickets de négociation */
+  const tickets = new Map()
+
+  function issueTicket(identity) {
+    const now = Date.now()
+    for (const [t, v] of tickets) if (v.expires < now) tickets.delete(t)
+    const ticket = randomBytes(24).toString('base64url')
+    tickets.set(ticket, { identity, expires: now + TICKET_TTL_MS })
+    return ticket
+  }
+
+  function redeemTicket(ticket) {
+    const entry = tickets.get(ticket)
+    tickets.delete(ticket) // usage unique
+    if (!entry || entry.expires < Date.now()) throw new Error('Ticket invalide ou expiré')
+    return entry.identity
+  }
 
   function send(conn, message) {
     if (conn.socket.readyState === 1) conn.socket.send(JSON.stringify(message))
@@ -82,7 +106,9 @@ export function createWebSocketRealtime({ log, canSubscribe }) {
     if (!conn.user) {
       if (msg.type !== 'auth') return send(conn, { type: 'error', message: 'Authentification requise' })
       try {
-        const identity = await verifyAccessToken(bearerToken(`Bearer ${msg.token}`) || '')
+        const identity = msg.ticket
+          ? redeemTicket(String(msg.ticket))
+          : await verifyAccessToken(bearerToken(`Bearer ${msg.token}`) || '')
         await ensureProfile(identity)
         conn.user = identity
         clearTimeout(conn.authTimer)
@@ -122,7 +148,11 @@ export function createWebSocketRealtime({ log, canSubscribe }) {
     await app.register(websocket, { options: { maxPayload: 64 * 1024 } })
 
     // Indique au client comment se connecter (Web PubSub renverra une URL signée).
-    app.get('/realtime/negotiate', async () => ({ provider: 'ws', url: '/api/realtime' }))
+    app.get('/realtime/negotiate', async (request) => ({
+      provider: 'ws',
+      url: '/api/realtime',
+      ticket: issueTicket(request.user),
+    }))
 
     app.get('/realtime', { websocket: true, config: { auth: 'none' } }, (socket) => {
       const conn = { socket, user: null, channels: new Set(), tracked: false }

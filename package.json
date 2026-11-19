@@ -14,6 +14,7 @@
     "db:make-admin": "node api/scripts/make-admin.js"
   },
   "dependencies": {
+    "@azure/msal-browser": "^5.30.0",
     "@fastify/multipart": "^10.1.9",
     "@fastify/static": "^10.1.10",
     "@fastify/websocket": "^11.3.7",

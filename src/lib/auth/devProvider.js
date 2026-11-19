@@ -83,6 +83,14 @@ export function createProvider({ setUser }) {
       clear()
     },
 
+    async clearSession() {
+      clear()
+    },
+
+    consumeRedirectTarget() {
+      return null
+    },
+
     async getAccessToken() {
       if (!token) return null
       if (isExpired(decodePayload(token))) {

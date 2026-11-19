@@ -9,7 +9,7 @@
  *   const { data, error } = await api.post('/posts', { caption, media_url })
  *   const { error }       = await api.del(`/posts/${id}`)
  *
- * `error` = { message, code, status }. Un 401 déconnecte l'utilisateur (App.vue
+ * `error` = { message, code, status }. Un 401 efface la session locale (App.vue
  * redirige alors vers /auth).
  */
 import { auth } from './auth'
@@ -54,7 +54,8 @@ async function request(method, path, { query, body, signal } = {}) {
   }
 
   if (!res.ok) {
-    if (res.status === 401 && token) await auth.logout()
+    // Token refusé : on oublie la session locale (sans redirection vers le fournisseur)
+    if (res.status === 401 && token) await auth.clearSession()
     const err = json?.error || {}
     return {
       data: null,
