@@ -10,22 +10,76 @@ pour pouvoir être branchés plus tard sur Entra ID, Blob Storage et Web PubSub.
 ## Prérequis
 
 - Node.js ≥ 20
-- PostgreSQL 16 (Azure Database for PostgreSQL : 16.15), local ou distant,
-  avec un compte propriétaire (superuser en local, compte admin du serveur sur
-  Azure)
+- PostgreSQL 16, installé nativement en local (aucun Docker requis) ; Azure
+  Database for PostgreSQL 16.15 en production. Il faut un compte propriétaire :
+  superuser `postgres` en local, compte admin du serveur sur Azure.
 
-## Installation
+## Lancement en local (sans Docker)
+
+L'app tourne en local avec trois éléments : le front Vite, l'API Node et un
+PostgreSQL 16 installé nativement sur le poste. Aucun conteneur n'est
+nécessaire.
+
+### 1. Installer PostgreSQL 16
+
+| Système | Installation |
+|---|---|
+| Windows | installeur officiel « PostgreSQL 16 » (EDB) depuis postgresql.org. Notez le mot de passe du compte `postgres` choisi à l'installation. |
+| macOS | `brew install postgresql@16 && brew services start postgresql@16` |
+| Debian / Ubuntu | `sudo apt install postgresql-16` (dépôt PGDG si besoin) |
+| Arch | `sudo pacman -S postgresql`, puis `initdb` et `systemctl start postgresql` |
+
+### 2. Créer une base vide
+
+```sh
+createdb -U postgres onb_social
+# ou : psql -U postgres -c "CREATE DATABASE onb_social"
+```
+
+### 3. Installer les dépendances et configurer `.env`
 
 ```sh
 npm install
-cp .env.example .env      # puis adapter les valeurs (voir ci-dessous)
+cp .env.example .env
 ```
 
-Créez une base vide, par exemple `createdb onb_social`, puis initialisez-la :
+Dans `.env`, il suffit en local d'adapter ces valeurs (le reste peut garder ses
+valeurs par défaut) :
+
+```dotenv
+# compte propriétaire local (superuser postgres)
+DATABASE_ADMIN_URL=postgres://postgres:<mot-de-passe-postgres>@localhost:5432/onb_social
+# rôle de l'API, créé par db:migrate : mêmes utilisateur et mot de passe des deux côtés
+API_DB_USER=onb_api
+API_DB_PASSWORD=<choisir-un-mot-de-passe>
+DATABASE_URL=postgres://onb_api:<le-même-mot-de-passe>@localhost:5432/onb_social
+# mode dev : connexion par simple nom d'utilisateur
+DEV_AUTH_ENABLED=true
+VITE_AUTH_PROVIDER=dev
+```
+
+### 4. Initialiser la base
 
 ```sh
 npm run db:migrate
 ```
+
+### 5. Lancer l'app
+
+```sh
+npm run dev
+```
+
+- Front (Vite, rechargement à chaud) : http://localhost:5173
+- API : http://localhost:3000. En dev, Vite relaie `/api` et `/media` vers
+  l'API.
+
+Connexion : en mode dev (`DEV_AUTH_ENABLED=true`, `VITE_AUTH_PROVIDER=dev`),
+l'écran de connexion ne demande qu'un nom d'utilisateur. Le compte est créé à la
+première connexion, et le même nom redonne toujours le même compte. Pour
+devenir admin, voir « Créer un compte admin ».
+
+## `db:migrate` en détail
 
 `db:migrate` se connecte avec `DATABASE_ADMIN_URL` (en TLS si
 `DATABASE_SSL=true`) et peut être relancé sans risque :
@@ -49,19 +103,6 @@ et l'IP du poste autorisée dans le pare-feu du serveur.
 - `npm run db:migrate -- --reset` repart de zéro en supprimant les schémas
   `public` et `auth`. Commande réservée à une base locale : elle est refusée si
   `NODE_ENV=production` ou `DATABASE_SSL=true`.
-
-## Lancement en développement
-
-```sh
-npm run dev
-```
-
-- Front (Vite, rechargement à chaud) : http://localhost:5173
-- API : http://localhost:3000. En dev, Vite relaie `/api` vers l'API.
-
-Connexion : en mode dev (`DEV_AUTH_ENABLED=true`, `VITE_AUTH_PROVIDER=dev`),
-l'écran de connexion ne demande qu'un nom d'utilisateur. Le compte est créé à la
-première connexion, et le même nom redonne toujours le même compte.
 
 ## Production (App Service Node)
 
