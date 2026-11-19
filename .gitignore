@@ -46,3 +46,7 @@ api/.dev-auth/
 
 # Médias uploadés en local
 data/
+
+# Azure Functions (local)
+functions/local.settings.json
+functions/.azurite/

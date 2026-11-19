@@ -1,0 +1,9 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "JOBS_DATABASE_URL": "postgres://onb_jobs:change-me-jobs@localhost:5432/onb_social",
+    "JOBS_DATABASE_SSL": "false"
+  }
+}

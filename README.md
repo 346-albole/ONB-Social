@@ -127,7 +127,7 @@ En production, les variables sont définies dans les « App settings ».
 |---|---|---|
 | admin du serveur (`DATABASE_ADMIN_URL`) | `db:migrate`, `db:make-admin`, depuis un poste ou la CI | propriétaire du schéma |
 | `API_DB_USER` (`DATABASE_URL`) | API (App Service) | aucun droit direct ; endosse `anon` / `authenticated`, RLS appliqué |
-| `JOBS_DB_USER` | Function timer (Phase 7) | `CONNECT` et `EXECUTE` sur `expire_lapsed_subscriptions()` uniquement |
+| `JOBS_DB_USER` | Function timer (`functions/`, via `JOBS_DATABASE_URL`) | `CONNECT` et `EXECUTE` sur `expire_lapsed_subscriptions()` uniquement |
 | `anon`, `authenticated` | rôles RLS (`NOLOGIN`) | droits sur les tables, filtrés par les policies |
 
 La Function timer utilise donc `JOBS_DB_USER`. Elle ne peut rien faire d'autre
@@ -227,6 +227,71 @@ Limite du WebSocket local : l'état est gardé en mémoire et ne vaut que pour u
 seule instance de l'API. Pour plusieurs instances, il faudra passer à Azure Web
 PubSub (voir `PORTAGE_AZURE.md`).
 
+## Tâche planifiée (Azure Functions)
+
+Le dossier `functions/` est un projet Azure Functions indépendant, déployé sur
+sa propre Function App (plan Flex Consumption, Linux, modèle de programmation
+Node.js v4). Il contient une seule fonction, `expireSubscriptions`.
+
+| Élément | Valeur |
+|---|---|
+| Déclencheur | timer, `0 0 2 * * *` (NCRONTAB, **UTC**), `runOnStartup: false` |
+| Heure en Suisse | 03:00 en hiver (CET, UTC+1), 04:00 en été (CEST, UTC+2) |
+| Action | `SELECT public.expire_lapsed_subscriptions();` (renvoie le nombre d'abonnements expirés) |
+| Rôle PostgreSQL | `JOBS_DB_USER`, qui peut uniquement exécuter cette fonction (créé par `db:migrate`) |
+| Logs | « succès — N abonnement(s) expiré(s) » ou « ÉCHEC — <erreur> » (invocation en échec) |
+
+Le planning est écrit en UTC, car `WEBSITE_TIME_ZONE` et `TZ` ne sont pas
+supportés sur Linux / Flex Consumption. 02:00 UTC tombe toujours en pleine nuit
+en Suisse, avant comme après le changement d'heure.
+
+**App settings de la Function App** :
+
+| Variable | Valeur |
+|---|---|
+| `JOBS_DATABASE_URL` | `postgres://<JOBS_DB_USER>:<JOBS_DB_PASSWORD>@<serveur>.postgres.database.azure.com:5432/<base>` : connexion dédiée, **pas** le `DATABASE_URL` de l'API |
+| `JOBS_DATABASE_SSL` | `true` (défaut) : TLS avec vérification du certificat |
+| `AzureWebJobsStorage` | fourni par Azure (compte de stockage de la Function App) |
+
+### Lancer et tester la fonction en local (sans Docker)
+
+Prérequis : Node.js et **Azure Functions Core Tools v4**, installés avec
+`npm install -g azure-functions-core-tools@4`. Avec npm ≥ 12, le script
+post-install qui télécharge le binaire peut être bloqué ; il faut alors
+l'autoriser avec `npm install-scripts approve azure-functions-core-tools`. Le
+stockage local est émulé par **Azurite**, installé par npm avec les dépendances
+du projet.
+
+```sh
+cd functions
+npm install
+cp local.settings.json.example local.settings.json   # puis renseigner JOBS_DATABASE_URL
+                                                      # (JOBS_DATABASE_SSL=false en local)
+npm run azurite        # terminal 1 : émulateur de stockage (AzureWebJobsStorage=UseDevelopmentStorage=true)
+npm start              # terminal 2 : func start (http://localhost:7071)
+```
+
+La base locale doit avoir été initialisée par `npm run db:migrate`, avec
+`JOBS_DB_USER` / `JOBS_DB_PASSWORD` définis dans le `.env` racine.
+
+**Déclencher la fonction manuellement**, sans attendre 02:00 UTC, via
+l'endpoint d'administration de l'hôte local :
+
+```sh
+curl -X POST http://localhost:7071/admin/functions/expireSubscriptions \
+     -H "Content-Type: application/json" -d '{"input":""}'
+# → HTTP 202 ; le terminal de `func start` affiche :
+#   expire_lapsed_subscriptions() : succès — N abonnement(s) expiré(s)
+```
+
+Sur Azure, le même endpoint se trouve à
+`https://<function-app>.azurewebsites.net/admin/functions/expireSubscriptions`.
+Il exige alors la clé maître (`x-functions-key: <master key>`). Le portail
+propose aussi « Test/Run » sur la fonction.
+
+Tests : `npm test` dans `functions/`. Le test d'intégration ne s'exécute que si
+`JOBS_DATABASE_URL` est défini.
+
 ## Créer un compte admin
 
 1. Connectez-vous une fois avec le compte voulu : le profil est créé à la
@@ -282,5 +347,6 @@ src/                 front Vue
   lib/auth/          module d'auth (interface, fournisseurs dev et MSAL)
   lib/realtime/      client temps réel (interface + WebSocket)
   lib/storage.js     upload de fichiers
+functions/           Azure Functions : timer quotidien d'expiration des abonnements
 docs/                audit et notes de portage
 ```

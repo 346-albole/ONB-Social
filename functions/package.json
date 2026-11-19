@@ -1,0 +1,23 @@
+{
+  "name": "onb-social-functions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ONB-Social scheduled jobs (Azure Functions, Node.js programming model v4)",
+  "type": "module",
+  "main": "src/functions/*.js",
+  "scripts": {
+    "azurite": "azurite --silent --location .azurite --debug .azurite/debug.log",
+    "start": "func start",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.17.1",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "azurite": "^3.38.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
