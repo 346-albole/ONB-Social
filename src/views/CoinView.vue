@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 
@@ -54,18 +54,8 @@ async function load() {
     currentUser.value = session.user
 
     const [profileRes, txRes] = await Promise.all([
-      withTimeout(
-        supabase.from('profiles')
-          .select('id, username, avatar_url, is_premium, is_official, onb_coins, premium_expires_at, official_expires_at, premium_is_permanent, official_is_permanent')
-          .eq('id', session.user.id).maybeSingle(),
-        8000
-      ),
-      withTimeout(
-        supabase.from('coin_transactions')
-          .select('*').eq('user_id', session.user.id)
-          .order('created_at', { ascending: false }).limit(30),
-        8000
-      ),
+      withTimeout(api.get('/me'), 8000),
+      withTimeout(api.get('/me/coin-transactions'), 8000),
     ])
     profile.value = profileRes?.data ?? null
     transactions.value = txRes?.data || []
@@ -77,7 +67,7 @@ async function confirmBuy(sub) {
   buying.value = sub
   buyResult.value = null
 
-  const { data, error } = await supabase.rpc('buy_subscription', { sub_type: sub })
+  const { data, error } = await api.post('/me/subscriptions', { type: sub })
   buying.value = null
 
   if (error) {
@@ -97,9 +87,7 @@ async function confirmBuy(sub) {
       profile.value.official_expires_at = data.expires_at
     }
     // Refresh transactions
-    const { data: tx } = await supabase.from('coin_transactions')
-      .select('*').eq('user_id', currentUser.value.id)
-      .order('created_at', { ascending: false }).limit(30)
+    const { data: tx } = await api.get('/me/coin-transactions')
     transactions.value = tx || []
   }
 }

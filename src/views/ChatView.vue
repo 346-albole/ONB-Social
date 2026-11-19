@@ -52,21 +52,13 @@ onMounted(async () => {
     const session = getCurrentSession()
     if (!session?.user) return
     currentUser.value = session.user
-    const { data: myProfile } = await withTimeout(
-      supabase.from('profiles')
-        .select('id, username, avatar_url, is_premium, username_color, chat_bg_url, warnings_count, is_banned')
-        .eq('id', session.user.id).maybeSingle(),
-      8000
-    )
+    const { data: myProfile } = await withTimeout(api.get('/me'), 8000, {})
     currentProfile.value = myProfile
     await loadFriends()
     // Nettoyer les vieux "non lus" en base (évite le badge 8+ au rechargement)
     // uid est maintenant disponible via currentUser.value (défini juste au-dessus)
     const myId = currentUser.value.id
-    supabase.from('messages')
-      .update({ read: true })
-      .eq('receiver_id', myId)
-      .eq('read', false)
+    api.post('/conversations/read-all')
       .then(() => {
         friends.value.forEach(f => { f.unread = 0 })
       })
@@ -78,9 +70,9 @@ onMounted(async () => {
     if (friendId) {
       let f = friends.value.find(f => f.id === friendId)
       if (!f) {
-        const { data: profile } = await supabase.from('profiles').select('id, username, avatar_url, is_premium, username_color').eq('id', friendId).maybeSingle()
+        const { data: profile } = await api.get(`/profiles/${friendId}`)
         if (profile) {
-          f = { ...profile, lastMsg: null, unread: 0, iFollow: false }
+          f = { ...profile, lastMsg: null, unread: 0, iFollow: !!profile.is_following }
           friends.value.unshift(f)
         }
       }
@@ -95,67 +87,14 @@ onUnmounted(() => {
 
 function _visRefresh() {
   if (document.visibilityState === 'visible' && activeFriend.value) {
-    supabase.from('messages').update({ read: true })
-      .eq('sender_id', activeFriend.value.id)
-      .eq('receiver_id', currentUser.value?.id)
-      .eq('read', false)
-      .then(() => {})
+    api.post(`/conversations/${activeFriend.value.id}/read`)
   }
 }
 
 async function loadFriends() {
-  const uid = currentUser.value.id
-  const [iFollowRes, followMeRes, msgRes, blocksRes] = await Promise.all([
-    withTimeout(supabase.from('follows').select('following_id').eq('follower_id', uid), 8000),
-    withTimeout(supabase.from('follows').select('follower_id').eq('following_id', uid), 8000),
-    withTimeout(supabase.from('messages').select('sender_id, receiver_id').or(`sender_id.eq.${uid},receiver_id.eq.${uid}`).order('created_at', { ascending: false }).limit(200), 8000),
-    withTimeout(supabase.from('blocks').select('*').or(`blocker_id.eq.${uid},blocked_id.eq.${uid}`), 5000)
-  ])
-
-  const blocks = blocksRes?.data || []
-  const blockedIds = new Set(blocks.map(b => b.blocker_id === uid ? b.blocked_id : b.blocker_id))
-
-  const iFollowIds  = new Set(iFollowRes?.data?.map(f => f.following_id) || [])
-  const followMeIds = new Set(followMeRes?.data?.map(f => f.follower_id) || [])
-  const mutualIds   = [...iFollowIds].filter(id => followMeIds.has(id))
-
-  const msgIds = new Set((msgRes?.data || []).flatMap(m => [m.sender_id, m.receiver_id]))
-  msgIds.delete(uid)
-
-  const allIds = Array.from(new Set([...mutualIds, ...msgIds])).filter(id => !blockedIds.has(id))
-  
-  if (!allIds.length) { friends.value = []; return }
-
-  const profilesRes = await withTimeout(
-    supabase.from('profiles')
-      .select('id, username, avatar_url, is_premium, username_color').in('id', allIds),
-    8000
-  )
-
-  const enriched = await Promise.all((profilesRes?.data || []).map(async p => {
-    const [lastRes, unreadRes] = await Promise.all([
-      withTimeout(
-        supabase.from('messages')
-          .select('content, created_at, image_url, sender_id, deleted')
-          .or(`and(sender_id.eq.${uid},receiver_id.eq.${p.id}),and(sender_id.eq.${p.id},receiver_id.eq.${uid})`)
-          .order('created_at', { ascending: false }).limit(1).maybeSingle(),
-        6000
-      ),
-      withTimeout(
-        supabase.from('messages')
-          .select('*', { count: 'exact', head: true })
-          .eq('sender_id', p.id).eq('receiver_id', uid).eq('read', false),
-        6000
-      ),
-    ])
-    return { ...p, lastMsg: lastRes?.data, unread: unreadRes?.count || 0, iFollow: iFollowIds.has(p.id) }
-  }))
-  enriched.sort((a, b) => {
-    if (!a.lastMsg && !b.lastMsg) return 0
-    if (!a.lastMsg) return 1; if (!b.lastMsg) return -1
-    return new Date(b.lastMsg.created_at) - new Date(a.lastMsg.created_at)
-  })
-  friends.value = enriched
+  // Amis mutuels + interlocuteurs (hors blocages), dernier message et non-lus : calculé par l'API
+  const res = await withTimeout(api.get('/conversations'), 8000)
+  friends.value = res?.data || []
 }
 
 async function openDM(friend) {
@@ -167,17 +106,10 @@ async function openDM(friend) {
   try {
     const uid = currentUser.value.id
     const fid = friend.id
-    const result = await withTimeout(
-      supabase.from('messages').select('*')
-        .or(`and(sender_id.eq.${uid},receiver_id.eq.${fid}),and(sender_id.eq.${fid},receiver_id.eq.${uid})`)
-        .order('created_at', { ascending: true })
-        .limit(100),
-      8000
-    )
+    const result = await withTimeout(api.get(`/conversations/${fid}/messages`), 8000)
     dmMessages.value = result?.data || []
     // Mark as read in background (non-blocking)
-    supabase.from('messages').update({ read: true })
-      .eq('sender_id', fid).eq('receiver_id', uid).eq('read', false)
+    api.post(`/conversations/${fid}/read`)
     const f = friends.value.find(f => f.id === fid)
     if (f) f.unread = 0
     // subscribeRealtime() est global, pas besoin de relancer ici
@@ -234,8 +166,7 @@ async function insertDM({ content, image_url }) {
   const fid = activeFriend.value.id
   dmMessages.value.push({ id: tmpId, sender_id: uid, receiver_id: fid, content, image_url, created_at: new Date().toISOString(), read: false, deleted: false })
   scrollToBottom()
-  const { data, error } = await supabase.from('messages')
-    .insert({ sender_id: uid, receiver_id: fid, content, image_url, read: false }).select().single()
+  const { data, error } = await api.post(`/conversations/${fid}/messages`, { content, image_url })
   if (!error && data) {
     const idx = dmMessages.value.findIndex(m => m.id === tmpId)
     if (idx !== -1) dmMessages.value.splice(idx, 1, data)
@@ -265,7 +196,7 @@ async function saveEdit() {
     return
   }
 
-  await supabase.from('messages').update({ content, edited: true, updated_at: new Date().toISOString() }).eq('id', id)
+  await api.patch(`/messages/${id}`, { content })
   const idx = dmMessages.value.findIndex(m => m.id === id)
   if (idx !== -1) dmMessages.value[idx] = { ...dmMessages.value[idx], content, edited: true }
   cancelEdit()
@@ -273,7 +204,7 @@ async function saveEdit() {
 
 async function deleteMsg(msg) {
   if (!confirm('Delete this message?')) return
-  await supabase.from('messages').update({ deleted: true, content: '' }).eq('id', msg.id)
+  await api.del(`/messages/${msg.id}`)
   const idx = dmMessages.value.findIndex(m => m.id === msg.id)
   if (idx !== -1) dmMessages.value[idx] = { ...dmMessages.value[idx], deleted: true, content: '' }
 }
@@ -299,7 +230,7 @@ function subscribeRealtime() {
         if (!dmMessages.value.find(m => m.id === payload.new.id)) {
           dmMessages.value.push(payload.new)
           scrollToBottom()
-          supabase.from('messages').update({ read: true }).eq('id', payload.new.id)
+          api.post(`/messages/${payload.new.id}/read`)
         }
         // Notif seulement si l'onglet est masqué
         if (document.hidden) {
@@ -336,7 +267,7 @@ async function addActiveFriend() {
   if (!activeFriend.value || actionLoading.value) return
   actionLoading.value = true
   const tid = activeFriend.value.id
-  await supabase.from('follows').insert({ follower_id: currentUser.value.id, following_id: tid })
+  await api.put(`/profiles/${tid}/follow`)
   activeFriend.value.iFollow = true
   const f = friends.value.find(x => x.id === tid)
   if (f) f.iFollow = true
@@ -348,7 +279,7 @@ async function blockActiveFriend() {
   if (!confirm(`Voulez-vous vraiment bloquer @${activeFriend.value.username} ?`)) return
   actionLoading.value = true
   const tid = activeFriend.value.id
-  await supabase.from('blocks').insert({ blocker_id: currentUser.value.id, blocked_id: tid })
+  await api.put(`/profiles/${tid}/block`)
   friends.value = friends.value.filter(x => x.id !== tid)
   activeFriend.value = null
   actionLoading.value = false

@@ -22,19 +22,23 @@ const PROVIDERS = {
 const providerName = import.meta.env.VITE_AUTH_PROVIDER || 'dev'
 const user = ref(null)
 let provider = null
+let providerPromise = null
 let initPromise = null
 
 function setUser(value) {
   user.value = value
 }
 
-async function getProvider() {
-  if (provider) return provider
-  const load = PROVIDERS[providerName]
-  if (!load) throw new Error(`VITE_AUTH_PROVIDER inconnu : ${providerName}`)
-  const mod = await load()
-  provider = mod.createProvider({ setUser })
-  return provider
+// Une seule instance de fournisseur, même si plusieurs appels arrivent avant
+// la fin du chargement (ex. aiBrain.js appelle l'API dès l'import).
+function getProvider() {
+  if (!providerPromise) {
+    const load = PROVIDERS[providerName]
+    providerPromise = load
+      ? load().then((mod) => (provider = mod.createProvider({ setUser })))
+      : Promise.reject(new Error(`VITE_AUTH_PROVIDER inconnu : ${providerName}`))
+  }
+  return providerPromise
 }
 
 export const auth = {
@@ -64,6 +68,8 @@ export const auth = {
   },
 
   async getAccessToken() {
+    // La session doit être restaurée avant de fournir un token.
+    await auth.init()
     const p = await getProvider()
     return p.getAccessToken()
   },

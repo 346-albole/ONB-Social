@@ -1,6 +1,5 @@
 <script setup>
 import { ref, onMounted, nextTick, computed, watch } from 'vue'
-import { supabase } from '../lib/supabaseClient'
 import { api } from '../lib/api'
 import { sessionRef } from '../lib/authStore'
 import {
@@ -97,12 +96,9 @@ onMounted(async () => {
     profile.value = data
     await refreshAiContext(data)
 
-    const [uRes, pRes] = await Promise.all([
-      supabase.from('profiles').select('id', { count: 'exact', head: true }),
-      supabase.from('posts').select('id', { count: 'exact', head: true })
-    ])
-    stats.value.users = uRes.count || 0
-    stats.value.posts = pRes.count || 0
+    const { data: siteStats } = await api.get('/stats')
+    stats.value.users = siteStats?.users || 0
+    stats.value.posts = siteStats?.posts || 0
   }
 
   // Auto-trigger load if we are on the AI page

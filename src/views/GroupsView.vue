@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { triggerNotification } from '../lib/pushNotifications'
@@ -66,33 +67,16 @@ async function load() {
     currentUser.value = session?.user || null
 
     if (currentUser.value) {
-      const { data: p } = await withTimeout(
-        supabase.from('profiles')
-          .select('id, username, avatar_url, username_color, is_admin')
-          .eq('id', currentUser.value.id).maybeSingle(),
-        8000
-      )
+      const { data: p } = await withTimeout(api.get('/me'), 8000, {})
       currentProfile.value = p
       isAdminUser.value = p?.is_admin || false
     }
 
-    const [groupsRes, memRes] = await Promise.all([
-      withTimeout(
-        supabase.from('groups')
-          .select('id, name, description, banner_url, created_by, created_at, is_private, group_members(count)')
-          .order('created_at', { ascending: false }),
-        10000
-      ),
-      currentUser.value
-        ? withTimeout(
-            supabase.from('group_members').select('group_id').eq('user_id', currentUser.value.id),
-            8000
-          )
-        : Promise.resolve(null),
-    ])
-    groups.value = groupsRes?.data || []
+    // Groupes visibles + mes adhésions en un appel
+    const groupsRes = await withTimeout(api.get('/groups'), 10000)
+    groups.value = groupsRes?.data?.groups || []
     if (currentUser.value) {
-      memberIds.value = new Set(memRes?.data?.map(m => m.group_id) || [])
+      memberIds.value = new Set(groupsRes?.data?.member_group_ids || [])
     }
   })
 }
@@ -112,14 +96,7 @@ async function openGroup(group) {
 async function loadChat() {
   loadingChat.value = true
   try {
-    const result = await withTimeout(
-      supabase.from('group_messages')
-        .select('*, profiles(username, avatar_url, username_color)')
-        .eq('group_id', activeGroup.value.id)
-        .order('created_at', { ascending: true })
-        .limit(100),
-      10000
-    )
+    const result = await withTimeout(api.get(`/groups/${activeGroup.value.id}/messages`), 10000)
     if (result?.data) chatMessages.value = result.data
   } catch (e) {
     console.warn('loadChat error:', e)
@@ -193,12 +170,7 @@ async function sendChatMessage() {
   sendingChat.value = true
   const content = newChatMsg.value.trim()
   newChatMsg.value = ''
-  const { data, error } = await supabase.from('group_messages').insert({
-    group_id: activeGroup.value.id,
-    sender_id: currentUser.value.id,
-    content,
-    created_at: new Date().toISOString(),
-  }).select('*, profiles(username, avatar_url, username_color)').single()
+  const { data, error } = await api.post(`/groups/${activeGroup.value.id}/messages`, { content })
   if (!error && data && !chatMessages.value.find(m => m.id === data.id)) {
     chatMessages.value.push(data)
     scrollChatToBottom()
@@ -214,13 +186,7 @@ function scrollChatToBottom() {
 async function loadMembers() {
   loadingMembers.value = true
   try {
-    const result = await withTimeout(
-      supabase.from('group_members')
-        .select('user_id, role, joined_at, profiles(id, username, avatar_url, is_official, is_premium, username_color)')
-        .eq('group_id', activeGroup.value.id)
-        .order('joined_at', { ascending: true }),
-      8000
-    )
+    const result = await withTimeout(api.get(`/groups/${activeGroup.value.id}/members`), 8000)
     if (!result?.error) groupMembers.value = result?.data || []
   } catch (e) {
     console.warn('loadMembers error:', e)
@@ -233,10 +199,7 @@ async function kickMember(member) {
   if (!isOwner.value) return
   if (member.user_id === currentUser.value.id) return
   if (!confirm(`Remove @${member.profiles?.username} from the group?`)) return
-  const { error } = await supabase.from('group_members')
-    .delete()
-    .eq('group_id', activeGroup.value.id)
-    .eq('user_id', member.user_id)
+  const { error } = await api.del(`/groups/${activeGroup.value.id}/members/${member.user_id}`)
   if (!error) {
     groupMembers.value = groupMembers.value.filter(m => m.user_id !== member.user_id)
     memberIds.value.delete(member.user_id)
@@ -254,8 +217,7 @@ async function toggleMembership(group) {
   if (was) {
     if (group.created_by === currentUser.value.id) return // owner can't leave
     memberIds.value.delete(group.id)
-    await supabase.from('group_members').delete()
-      .eq('group_id', group.id).eq('user_id', currentUser.value.id)
+    await api.del(`/groups/${group.id}/members/${currentUser.value.id}`)
     const g = groups.value.find(g => g.id === group.id)
     if (g?.group_members?.[0]) g.group_members[0].count = Math.max(0, (g.group_members[0].count || 1) - 1)
   } else {
@@ -265,8 +227,7 @@ async function toggleMembership(group) {
       return
     }
     memberIds.value.add(group.id)
-    const { error } = await supabase.from('group_members')
-      .insert({ group_id: group.id, user_id: currentUser.value.id, role: 'member' })
+    const { error } = await api.post(`/groups/${group.id}/join`)
     if (error) { memberIds.value.delete(group.id); alert('Erreur : ' + error.message); return }
     const g = groups.value.find(g => g.id === group.id)
     if (g?.group_members?.[0]) g.group_members[0].count = (g.group_members[0].count || 0) + 1
@@ -286,23 +247,20 @@ async function createGroup() {
       bannerUrl = publicUrl
     }
   }
-  const { data, error } = await supabase.from('groups').insert({
+  // Le créateur est ajouté comme admin du groupe dans la même transaction (API)
+  const { data, error } = await api.post('/groups', {
     name: newGroupName.value.trim(),
     description: newGroupDesc.value.trim() || null,
     banner_url: bannerUrl,
-    created_by: currentUser.value.id,
     is_private: newGroupIsPrivate.value,
-    created_at: new Date().toISOString(),
-  }).select().single()
+  })
 
   if (!error && data) {
-    await supabase.from('group_members')
-      .insert({ group_id: data.id, user_id: currentUser.value.id, role: 'admin' })
     memberIds.value.add(data.id)
     newGroupName.value = ''; newGroupDesc.value = ''
     newGroupIsPrivate.value = false; newGroupBanner.value = null; newGroupBannerUrl.value = null
     showCreate.value = false; creating.value = false
-    const fresh = { ...data, group_members: [{ count: 1 }] }
+    const fresh = data
     groups.value.unshift(fresh)
     openGroup(fresh)
   } else if (error) {
@@ -320,10 +278,7 @@ const handleBannerFile = (e) => {
 async function searchInvite() {
   if (!inviteSearch.value.trim()) { inviteResults.value = []; return }
   inviteLoading.value = true
-  const { data } = await supabase.from('profiles')
-    .select('id, username, avatar_url')
-    .ilike('username', `%${inviteSearch.value}%`)
-    .limit(8)
+  const { data } = await api.get('/profiles', { query: { q: inviteSearch.value, limit: 8 } })
   const memberUserIds = new Set(groupMembers.value.map(m => m.user_id))
   inviteResults.value = (data || []).filter(u => !memberUserIds.has(u.id) && u.id !== currentUser.value?.id)
   inviteLoading.value = false
@@ -332,8 +287,7 @@ async function searchInvite() {
 async function inviteUser(user) {
   if (inviting.value.has(user.id)) return
   inviting.value.add(user.id)
-  const { error } = await supabase.from('group_members')
-    .insert({ group_id: activeGroup.value.id, user_id: user.id, role: 'member' })
+  const { error } = await api.post(`/groups/${activeGroup.value.id}/members`, { user_id: user.id })
   if (!error) {
     inviteResults.value = inviteResults.value.filter(u => u.id !== user.id)
     groupMembers.value.push({ user_id: user.id, role: 'member', joined_at: new Date().toISOString(), profiles: user })
@@ -393,7 +347,7 @@ function loadHiddenGroups() {
 async function adminDeleteGroup(group) {
   if (!isAdminUser.value) return
   if (!confirm(`Permanently delete the group "${group.name}" ?`)) return
-  const { error } = await supabase.from('groups').delete().eq('id', group.id)
+  const { error } = await api.del(`/groups/${group.id}`)
   if (!error) {
     groups.value = groups.value.filter(g => g.id !== group.id)
     if (activeGroup.value?.id === group.id) activeGroup.value = null

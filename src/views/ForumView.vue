@@ -69,12 +69,7 @@ onMounted(async () => {
     const session = getCurrentSession()
     currentUser.value = session?.user || null
     if (currentUser.value) {
-      const { data: p } = await withTimeout(
-        supabase.from('profiles')
-          .select('id, username, avatar_url, username_color, is_premium, is_official, is_admin, warnings_count, is_banned')
-          .eq('id', currentUser.value.id).maybeSingle(),
-        8000
-      )
+      const { data: p } = await withTimeout(api.get('/me'), 8000, {})
       currentProfile.value = p
     }
     await loadPosts()
@@ -87,23 +82,12 @@ onUnmounted(() => { realtimeSub?.unsubscribe() })
 async function loadPosts() {
   loadingPosts.value = true
   try {
-    let q = supabase.from('forum_posts')
-      .select('id, title, content, category, image_url, created_at, user_id, profiles(id, username, avatar_url, username_color, is_premium, is_official), forum_votes(count), forum_comments(count)')
-      .order('created_at', { ascending: false })
-      .limit(50)
-    if (activeCategory.value) q = q.eq('category', activeCategory.value)
-
-    const result = await withTimeout(q, 10000)
+    // Posts + mes votes en un appel
+    const result = await withTimeout(
+      api.get('/forum/posts', { query: { category: activeCategory.value || undefined } }), 10000)
     if (result?.data) {
-      posts.value = result.data
-      if (currentUser.value) {
-        const votesResult = await withTimeout(
-          supabase.from('forum_votes')
-            .select('post_id').eq('user_id', currentUser.value.id).is('comment_id', null),
-          8000
-        )
-        likedPosts.value = new Set(votesResult?.data?.map(v => v.post_id) || [])
-      }
+      posts.value = result.data.posts
+      likedPosts.value = new Set(result.data.voted_post_ids || [])
     }
   } catch (e) {
     console.warn('loadPosts error:', e)
@@ -152,25 +136,11 @@ function backToList() {
 async function loadComments(postId) {
   loadingComments.value = true
   try {
-    const [commentsRes, votesRes] = await Promise.all([
-      withTimeout(
-        supabase.from('forum_comments')
-          .select('id, content, created_at, user_id, parent_id, profiles(id, username, avatar_url, username_color, is_premium, is_official), forum_votes(count)')
-          .eq('post_id', postId)
-          .order('created_at', { ascending: true }),
-        8000
-      ),
-      currentUser.value
-        ? withTimeout(
-            supabase.from('forum_votes')
-              .select('comment_id').eq('user_id', currentUser.value.id).not('comment_id', 'is', null),
-            8000
-          )
-        : Promise.resolve(null),
-    ])
-    if (!commentsRes?.error) {
-      postComments.value = commentsRes?.data || []
-      likedComments.value = new Set(votesRes?.data?.map(v => v.comment_id) || [])
+    // Commentaires + mes votes en un appel
+    const commentsRes = await withTimeout(api.get(`/forum/posts/${postId}/comments`), 8000)
+    if (commentsRes?.data) {
+      postComments.value = commentsRes.data.comments || []
+      likedComments.value = new Set(commentsRes.data.voted_comment_ids || [])
     }
   } catch (e) {
     console.warn('loadComments error:', e)
@@ -203,13 +173,12 @@ async function votePost(post) {
   if (isLiked) {
     likedPosts.value.delete(post.id)
     if (post.forum_votes?.[0]) post.forum_votes[0].count = Math.max(0, (post.forum_votes[0].count || 1) - 1)
-    await supabase.from('forum_votes').delete()
-      .eq('post_id', post.id).eq('user_id', currentUser.value.id).is('comment_id', null)
+    await api.del(`/forum/posts/${post.id}/vote`)
   } else {
     likedPosts.value.add(post.id)
     if (!post.forum_votes) post.forum_votes = [{ count: 0 }]
     post.forum_votes[0].count = (post.forum_votes[0].count || 0) + 1
-    await supabase.from('forum_votes').insert({ post_id: post.id, user_id: currentUser.value.id })
+    await api.put(`/forum/posts/${post.id}/vote`)
   }
   pendingLikes.value.delete('p' + post.id)
 }
@@ -221,13 +190,12 @@ async function voteComment(comment) {
   if (isLiked) {
     likedComments.value.delete(comment.id)
     if (comment.forum_votes?.[0]) comment.forum_votes[0].count = Math.max(0, (comment.forum_votes[0].count || 1) - 1)
-    await supabase.from('forum_votes').delete()
-      .eq('comment_id', comment.id).eq('user_id', currentUser.value.id)
+    await api.del(`/forum/comments/${comment.id}/vote`)
   } else {
     likedComments.value.add(comment.id)
     if (!comment.forum_votes) comment.forum_votes = [{ count: 0 }]
     comment.forum_votes[0].count = (comment.forum_votes[0].count || 0) + 1
-    await supabase.from('forum_votes').insert({ comment_id: comment.id, user_id: currentUser.value.id })
+    await api.put(`/forum/comments/${comment.id}/vote`)
   }
   pendingLikes.value.delete('c' + comment.id)
 }
@@ -250,12 +218,10 @@ async function sendComment() {
   }
 
   sendingComment.value = true
-  const { data, error } = await supabase.from('forum_comments').insert({
-    post_id: activePost.value.id,
-    user_id: currentUser.value.id,
+  const { data, error } = await api.post(`/forum/posts/${activePost.value.id}/comments`, {
     content,
     parent_id: replyTo.value?.id || null,
-  }).select('id, content, created_at, user_id, parent_id, profiles(id, username, avatar_url, username_color, is_premium, is_official), forum_votes(count)').single()
+  })
   if (!error && data) {
     if (!postComments.value.find(c => c.id === data.id)) postComments.value.push(data)
     // Update comment count on active post
@@ -271,17 +237,15 @@ async function sendComment() {
 // ── DELETE ────────────────────────────────────────────────────
 async function deletePost(post) {
   if (!confirm('Delete this post?')) return
-  await supabase.from('forum_votes').delete().eq('post_id', post.id)
-  await supabase.from('forum_comments').delete().eq('post_id', post.id)
-  await supabase.from('forum_posts').delete().eq('id', post.id)
+  // Commentaires et votes supprimés en cascade côté base
+  await api.del(`/forum/posts/${post.id}`)
   posts.value = posts.value.filter(p => p.id !== post.id)
   if (view.value === 'post') backToList()
 }
 
 async function deleteComment(comment) {
   if (!confirm('Delete this comment?')) return
-  await supabase.from('forum_votes').delete().eq('comment_id', comment.id)
-  await supabase.from('forum_comments').delete().eq('id', comment.id)
+  await api.del(`/forum/comments/${comment.id}`)
   postComments.value = postComments.value.filter(c => c.id !== comment.id)
 }
 
@@ -322,13 +286,12 @@ async function createPost() {
       imageUrl = publicUrl
     }
   }
-  const { data, error } = await supabase.from('forum_posts').insert({
-    user_id: currentUser.value.id,
+  const { data, error } = await api.post('/forum/posts', {
     title: newTitle.value.trim(),
     content: newContent.value.trim() || null,
     category: newCategory.value,
     image_url: imageUrl,
-  }).select('id, title, content, category, image_url, created_at, user_id, profiles(id, username, avatar_url, username_color, is_premium, is_official), forum_votes(count), forum_comments(count)').single()
+  })
 
   if (!error && data) {
     posts.value.unshift(data)

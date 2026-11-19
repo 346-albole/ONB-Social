@@ -898,8 +898,15 @@ CREATE POLICY "group_messages_update" ON public.group_messages FOR UPDATE
 -- group_posts / group_post_likes : non utilisées → aucune policy (accès refusé).
 
 -- ── chat global (V8 + V11) ───────────────────────────────────────────────────
+-- [corrigé] « deleted = false » seul empêchait la suppression logique : Postgres
+-- exige que la ligne modifiée reste visible pour qui la met à jour. L'auteur et
+-- les admins voient donc aussi les messages supprimés (l'API les filtre).
 CREATE POLICY "global_messages_select" ON public.global_messages FOR SELECT
-  USING (auth.uid() IS NOT NULL AND deleted = false);
+  USING (auth.uid() IS NOT NULL AND (
+    deleted = false
+    OR auth.uid() = sender_id
+    OR EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.is_admin = true)
+  ));
 CREATE POLICY "global_messages_insert" ON public.global_messages FOR INSERT
   WITH CHECK (auth.uid() = sender_id);
 CREATE POLICY "global_messages_update" ON public.global_messages FOR UPDATE

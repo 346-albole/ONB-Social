@@ -36,12 +36,7 @@ async function init() {
     if (!session?.user) { loading.value = false; return }
     currentUser.value = session.user
 
-    const { data: p } = await withTimeout(
-      supabase.from('profiles')
-        .select('id, username, avatar_url, username_color, is_premium, is_official, is_admin, warnings_count, is_banned')
-        .eq('id', session.user.id).maybeSingle(),
-      8000
-    )
+    const { data: p } = await withTimeout(api.get('/me'), 8000, {})
     currentProfile.value = p
     await loadMessages()
     subscribeMessages()
@@ -86,13 +81,7 @@ onUnmounted(() => {
 
 async function loadMessages() {
   try {
-    const result = await withTimeout(
-      supabase.from('global_messages')
-        .select('*, profiles(id, username, avatar_url, username_color, is_premium, is_official, is_admin, is_anonymous)')
-        .order('created_at', { ascending: true })
-        .limit(200),
-      10000
-    )
+    const result = await withTimeout(api.get('/global-messages'), 10000)
     if (result?.error) { console.error('Global chat load error:', result.error); return }
     messages.value = (result?.data || []).filter(m => !m.deleted)
     await nextTick()
@@ -150,11 +139,7 @@ async function sendMessage() {
   const msg = newMessage.value
   newMessage.value = ''
   try {
-    const { data, error } = await supabase
-      .from('global_messages')
-      .insert({ sender_id: currentUser.value.id, content: msg.trim() })
-      .select('*, profiles(id, username, avatar_url, username_color, is_premium, is_official, is_admin, is_anonymous)')
-      .single()
+    const { data, error } = await api.post('/global-messages', { content: msg.trim() })
     if (!error && data && !messages.value.find(m => m.id === data.id)) {
       messages.value.push(data)
       await nextTick()
@@ -182,10 +167,7 @@ async function deleteMsg(msg) {
   const backup = [...messages.value]
   messages.value = messages.value.filter(m => m.id !== msg.id)
 
-  const { error } = await supabase
-    .from('global_messages')
-    .update({ deleted: true })
-    .eq('id', msg.id)
+  const { error } = await api.del(`/global-messages/${msg.id}`)
 
   if (error) {
     console.error('Delete error:', error)
@@ -211,7 +193,7 @@ async function saveEdit(msg) {
     return
   }
 
-  await supabase.from('global_messages').update({ content, edited: true }).eq('id', msg.id)
+  await api.patch(`/global-messages/${msg.id}`, { content })
   const idx = messages.value.findIndex(m => m.id === msg.id)
   if (idx !== -1) messages.value[idx] = { ...messages.value[idx], content, edited: true }
   editingId.value = null

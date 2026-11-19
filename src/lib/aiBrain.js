@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient'
+import { api } from './api'
 import { ref } from 'vue'
 
 /**
@@ -60,12 +61,9 @@ export async function loadModel() {
 // ── Local Site Context Updater ──────────────────────────────────────────
 export async function refreshAiContext(profile) {
   try {
-    const [uRes, pRes] = await Promise.all([
-      supabase.from('profiles').select('id', { count: 'exact', head: true }),
-      supabase.from('posts').select('id', { count: 'exact', head: true })
-    ])
-    sessionContext.siteUsers = uRes.count || 0
-    sessionContext.sitePosts = pRes.count || 0
+    const { data: siteStats } = await api.get('/stats')
+    sessionContext.siteUsers = siteStats?.users || 0
+    sessionContext.sitePosts = siteStats?.posts || 0
     if (profile) {
       sessionContext.userName = profile.username || "l'ami"
       sessionContext.userCoins = profile.onb_coins || 0
@@ -149,7 +147,7 @@ export function clearHistory() {
 // ── Global Settings (Troll Mode) ────────────────────────────────────────
 export async function syncGlobalSettings() {
   try {
-    const { data, error } = await supabase.from('site_settings').select('is_troll_mode').eq('id', 1).maybeSingle();
+    const { data, error } = await api.get('/site-settings');
     if (!error && data) {
       isTrollMode.value = data.is_troll_mode;
     }

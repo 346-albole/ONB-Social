@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
-import { supabase } from '../lib/supabaseClient'
+import { api } from '../lib/api'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { useRouter } from 'vue-router'
@@ -61,11 +61,6 @@ const broadcastType = ref('banner')
 const sendingBroadcast = ref(false)
 const bcSubTab = ref('announcements')
 
-// SQL runner
-const sqlQuery = ref('')
-const sqlResult = ref(null)
-const sqlError = ref('')
-const runningSql = ref(false)
 
 const filteredUsers = computed(() => {
   const q = userSearch.value.toLowerCase()
@@ -82,10 +77,7 @@ async function checkAdmin() {
     const session = getCurrentSession()
     if (!session?.user) { router.push('/auth'); return }
     currentUser.value = session.user
-    const { data: profile } = await withTimeout(
-      supabase.from('profiles').select('is_admin, username').eq('id', session.user.id).maybeSingle(),
-      8000
-    )
+    const { data: profile } = await withTimeout(api.get('/me'), 8000, {})
     if (!profile?.is_admin) { router.push('/'); return }
     isAdmin.value = true
     await loadDashboard()
@@ -94,18 +86,12 @@ async function checkAdmin() {
 
 async function loadDashboard() {
   try {
-    const [u, p, c, m, g, gm] = await Promise.all([
-      withTimeout(supabase.from('profiles').select('*', { count: 'exact', head: true }), 8000),
-      withTimeout(supabase.from('posts').select('*', { count: 'exact', head: true }), 8000),
-      withTimeout(supabase.from('comments').select('*', { count: 'exact', head: true }), 8000),
-      withTimeout(supabase.from('messages').select('*', { count: 'exact', head: true }), 8000),
-      withTimeout(supabase.from('groups').select('*', { count: 'exact', head: true }), 8000),
-      withTimeout(supabase.from('global_messages').select('*', { count: 'exact', head: true }), 8000),
-    ])
+    const res = await withTimeout(api.get('/admin/overview'), 8000)
+    const o = res?.data || {}
     stats.value = {
-      users: u?.count||0, posts: p?.count||0,
-      comments: c?.count||0, messages: m?.count||0,
-      groups: g?.count||0, globalMsgs: gm?.count||0
+      users: o.users||0, posts: o.posts||0,
+      comments: o.comments||0, messages: o.messages||0,
+      groups: o.groups||0, globalMsgs: o.globalMsgs||0
     }
   } catch (e) {
     console.warn('loadDashboard error:', e)
@@ -115,12 +101,7 @@ async function loadDashboard() {
 async function loadUsers() {
   loadingUsers.value = true; userError.value = ''
   try {
-    const result = await withTimeout(
-      supabase.from('profiles')
-        .select('id, username, avatar_url, is_premium, is_official, is_admin, is_banned, bio, updated_at, username_color, banner_url, is_anonymous, is_invisible')
-        .order('updated_at', { ascending: false, nullsFirst: false }),
-      10000
-    )
+    const result = await withTimeout(api.get('/admin/users', { query: { sort: 'updated' } }), 10000)
     users.value = result?.data || []
   } catch (e) { userError.value = e.message
   } finally { loadingUsers.value = false }
@@ -129,11 +110,7 @@ async function loadUsers() {
 async function loadPosts() {
   loadingPosts.value = true
   try {
-    const result = await withTimeout(
-      supabase.from('posts').select('*, profiles(username, avatar_url)')
-        .order('created_at', { ascending: false }).limit(100),
-      10000
-    )
+    const result = await withTimeout(api.get('/admin/posts', { query: { kind: 'posts' } }), 10000)
     posts.value = (result?.data || []).filter(p => !p.media_url?.match(/\.(mp4|webm|mov|m4v)/i))
   } catch (e) { console.warn(e)
   } finally { loadingPosts.value = false }
@@ -142,12 +119,7 @@ async function loadPosts() {
 async function loadAdminReels() {
   loadingAdminReels.value = true
   try {
-    const { data } = await withTimeout(
-      supabase.from('posts').select('*, profiles(username), likes(count), comments(count), views')
-        .or('media_url.ilike.%.mp4,media_url.ilike.%.webm,media_url.ilike.%.mov,media_url.ilike.%.m4v')
-        .order('created_at', { ascending: false }),
-      10000
-    )
+    const { data } = await withTimeout(api.get('/admin/posts', { query: { kind: 'reels' } }), 10000, {})
     adminReels.value = data || []
   } catch (e) { console.warn(e)
   } finally { loadingAdminReels.value = false }
@@ -156,12 +128,8 @@ async function loadAdminReels() {
 async function loadGroups() {
   loadingGroups.value = true
   try {
-    const result = await withTimeout(
-      supabase.from('groups').select('*, group_members(count)')
-        .order('created_at', { ascending: false }),
-      10000
-    )
-    groups.value = result?.data || []
+    const result = await withTimeout(api.get('/groups'), 10000)
+    groups.value = result?.data?.groups || []
   } catch (e) { console.warn(e)
   } finally { loadingGroups.value = false }
 }
@@ -169,11 +137,7 @@ async function loadGroups() {
 async function loadGlobalMsgs() {
   loadingGlobalMsgs.value = true
   try {
-    const result = await withTimeout(
-      supabase.from('global_messages').select('*, profiles(username, avatar_url)')
-        .order('created_at', { ascending: false }).limit(100),
-      10000
-    )
+    const result = await withTimeout(api.get('/admin/global-messages'), 10000)
     globalMsgs.value = result?.data || []
   } catch (e) { console.warn(e)
   } finally { loadingGlobalMsgs.value = false }
@@ -182,30 +146,10 @@ async function loadGlobalMsgs() {
 async function loadDms() {
   loadingDms.value = true
   try {
-    const { data: msgs, error } = await withTimeout(
-      supabase.from('messages')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(100),
-      10000
-    )
+    // DMs avec expéditeur / destinataire joints par l'API
+    const { data: msgs, error } = await withTimeout(api.get('/admin/messages'), 10000, {})
     if (error) { console.warn('query error', error); dms.value = []; return }
-    const dmsData = msgs || []
-
-    const userIds = [...new Set(dmsData.flatMap(m => [m.sender_id, m.receiver_id]))]
-    if (userIds.length > 0) {
-      const { data: profiles } = await supabase.from('profiles').select('id, username, avatar_url').in('id', userIds)
-      const pMap = {}
-      if (profiles) profiles.forEach(p => pMap[p.id] = p)
-      
-      dms.value = dmsData.map(m => ({
-        ...m,
-        sender: pMap[m.sender_id] || { username: 'Unknown' },
-        receiver: pMap[m.receiver_id] || { username: 'Unknown' }
-      }))
-    } else {
-      dms.value = []
-    }
+    dms.value = msgs || []
   } catch (e) {
     console.warn('loadDms exception:', e)
   } finally {
@@ -216,13 +160,7 @@ async function loadDms() {
 async function loadComments() {
   loadingComments.value = true
   try {
-    const { data } = await withTimeout(
-      supabase.from('comments')
-        .select('*, profiles(username, avatar_url)')
-        .order('created_at', { ascending: false })
-        .limit(100),
-      10000
-    )
+    const { data } = await withTimeout(api.get('/admin/comments'), 10000, {})
     comments.value = data || []
   } catch (e) {
     console.warn(e)
@@ -232,19 +170,19 @@ async function loadComments() {
 }
 
 async function loadAnnouncements() {
-  const { data } = await supabase.from('announcements').select('*').order('created_at', { ascending: false })
+  const { data } = await api.get('/admin/announcements')
   announcements.value = data || []
 }
 
 async function loadBroadcasts() {
-  const { data } = await supabase.from('admin_broadcasts').select('*').order('created_at', { ascending: false })
+  const { data } = await api.get('/admin/broadcasts')
   broadcasts.value = data || []
 }
 
 // ── USER MANAGEMENT ────────────────────────────────────────────
 async function toggleField(user, field) {
   const newVal = !user[field]
-  const { error } = await supabase.from('profiles').update({ [field]: newVal }).eq('id', user.id)
+  const { error } = await api.patch(`/admin/users/${user.id}`, { [field]: newVal })
   if (!error) {
     user[field] = newVal
     if (field === 'is_admin' && user.id === currentUser.value.id && !newVal) {
@@ -261,20 +199,15 @@ function startEditUser(user) {
 }
 
 async function saveEditUser(user) {
-  const { error } = await supabase.from('profiles').update({ bio: editUserBio.value }).eq('id', user.id)
+  const { error } = await api.patch(`/admin/users/${user.id}`, { bio: editUserBio.value })
   if (!error) user.bio = editUserBio.value
   editingUser.value = null
 }
 
 async function deleteUser(user) {
   if (!confirm(`Delete @${user.username}? This action is irreversible.`)) return
-  // Delete related data
-  await supabase.from('posts').delete().eq('user_id', user.id)
-  await supabase.from('comments').delete().eq('user_id', user.id)
-  await supabase.from('likes').delete().eq('user_id', user.id)
-  await supabase.from('group_members').delete().eq('user_id', user.id)
-  await supabase.from('global_messages').delete().eq('sender_id', user.id)
-  const { error } = await supabase.from('profiles').delete().eq('id', user.id)
+  // Le contenu de l'utilisateur est supprimé en cascade côté base
+  const { error } = await api.del(`/admin/users/${user.id}`)
   if (!error) {
     users.value = users.value.filter(u => u.id !== user.id)
     stats.value.users = Math.max(0, stats.value.users - 1)
@@ -284,22 +217,21 @@ async function deleteUser(user) {
 }
 
 async function setUsernameColor(user, color) {
-  await supabase.from('profiles').update({ username_color: color }).eq('id', user.id)
+  await api.patch(`/admin/users/${user.id}`, { username_color: color })
   user.username_color = color
 }
 
 async function forceReload(user) {
   if (!confirm(`Forcer l'actualisation de la page de @${user.username} à distance ?`)) return
-  const { error } = await supabase.from('admin_commands').insert({ target_user_id: user.id, admin_id: currentUser.value.id, command: 'reload' })
+  const { error } = await api.post(`/admin/users/${user.id}/reload`)
   if (error) alert('Erreur: ' + error.message)
 }
 
 // ── POSTS & REELS MANAGEMENT ──────────────────────────────────────────
 async function deletePost(post) {
   if (!confirm('Delete this post/reel?')) return
-  await supabase.from('likes').delete().eq('post_id', post.id)
-  await supabase.from('comments').delete().eq('post_id', post.id)
-  const { error } = await supabase.from('posts').delete().eq('id', post.id)
+  // Likes et commentaires supprimés en cascade côté base
+  const { error } = await api.del(`/posts/${post.id}`)
   if (!error) {
     posts.value = posts.value.filter(p => p.id !== post.id)
     adminReels.value = adminReels.value.filter(p => p.id !== post.id)
@@ -310,27 +242,27 @@ async function deletePost(post) {
 // ── GROUPS MANAGEMENT ─────────────────────────────────────────
 async function deleteGroup(group) {
   if (!confirm(`Delete the group "${group.name}"?`)) return
-  const { error } = await supabase.from('groups').delete().eq('id', group.id)
+  const { error } = await api.del(`/groups/${group.id}`)
   if (!error) groups.value = groups.value.filter(g => g.id !== group.id)
   else alert('Erreur: ' + error.message)
 }
 
 async function toggleGroupPrivacy(group) {
   const newVal = !group.is_private
-  const { error } = await supabase.from('groups').update({ is_private: newVal }).eq('id', group.id)
+  const { error } = await api.patch(`/admin/groups/${group.id}`, { is_private: newVal })
   if (!error) group.is_private = newVal
 }
 
 // ── GLOBAL CHAT MANAGEMENT ────────────────────────────────────
 async function deleteGlobalMsg(msg) {
-  await supabase.from('global_messages').delete().eq('id', msg.id)
+  await api.del(`/admin/global-messages/${msg.id}`)
   globalMsgs.value = globalMsgs.value.filter(m => m.id !== msg.id)
   stats.value.globalMsgs = Math.max(0, stats.value.globalMsgs - 1)
 }
 
 async function clearAllGlobalMsgs() {
   if (!confirm('Vider tout le chat global ? Irréversible.')) return
-  await supabase.from('global_messages').delete().neq('id', 0)
+  await api.del('/admin/global-messages')
   globalMsgs.value = []
   stats.value.globalMsgs = 0
 }
@@ -338,14 +270,14 @@ async function clearAllGlobalMsgs() {
 // ── DM & COMMENTS ─────────────────────────────────────────────
 async function deleteDm(dm) {
   if (!confirm('Supprimer ce DM définitivement ?')) return
-  await supabase.from('messages').delete().eq('id', dm.id)
+  await api.del(`/admin/messages/${dm.id}`)
   dms.value = dms.value.filter(m => m.id !== dm.id)
   stats.value.messages = Math.max(0, stats.value.messages - 1)
 }
 
 async function deleteComment(comment) {
   if (!confirm('Supprimer ce commentaire définitivement ?')) return
-  await supabase.from('comments').delete().eq('id', comment.id)
+  await api.del(`/comments/${comment.id}`)
   comments.value = comments.value.filter(c => c.id !== comment.id)
   stats.value.comments = Math.max(0, stats.value.comments - 1)
 }
@@ -355,12 +287,11 @@ async function sendAnnouncement() {
   if (!newAnnouncement.value.trim()) return
   sendingAnnouncement.value = true
   try {
-    const { data, error } = await supabase.from('announcements').insert({
-      admin_id: currentUser.value.id,
+    const { data, error } = await api.post('/admin/announcements', {
       content: newAnnouncement.value.trim(),
       type: announcementType.value,
       active: true,
-    }).select().single()
+    })
     if (!error && data) { announcements.value.unshift(data); newAnnouncement.value = '' }
   } catch (e) {
     console.warn('sendAnnouncement error:', e)
@@ -370,12 +301,12 @@ async function sendAnnouncement() {
 }
 
 async function deleteAnnouncement(ann) {
-  await supabase.from('announcements').delete().eq('id', ann.id)
+  await api.del(`/admin/announcements/${ann.id}`)
   announcements.value = announcements.value.filter(a => a.id !== ann.id)
 }
 
 async function toggleAnnouncement(ann) {
-  await supabase.from('announcements').update({ active: !ann.active }).eq('id', ann.id)
+  await api.patch(`/admin/announcements/${ann.id}`, { active: !ann.active })
   ann.active = !ann.active
 }
 
@@ -384,14 +315,13 @@ async function sendBroadcast() {
   if (!newBroadcastTitle.value.trim() && !newBroadcastHtml.value.trim()) return
   sendingBroadcast.value = true
   try {
-    const { data, error } = await supabase.from('admin_broadcasts').insert({
-      admin_id: currentUser.value.id,
+    const { data, error } = await api.post('/admin/broadcasts', {
       title: newBroadcastTitle.value.trim(),
       html_content: newBroadcastHtml.value.trim(),
       js_content: newBroadcastJs.value.trim(),
       broadcast_type: broadcastType.value,
       active: true,
-    }).select().single()
+    })
     if (!error && data) {
       broadcasts.value.unshift(data)
       newBroadcastTitle.value = ''; newBroadcastHtml.value = ''; newBroadcastJs.value = ''
@@ -404,27 +334,13 @@ async function sendBroadcast() {
 }
 
 async function deleteBroadcast(bc) {
-  await supabase.from('admin_broadcasts').delete().eq('id', bc.id)
+  await api.del(`/admin/broadcasts/${bc.id}`)
   broadcasts.value = broadcasts.value.filter(b => b.id !== bc.id)
 }
 
 async function toggleBroadcast(bc) {
-  await supabase.from('admin_broadcasts').update({ active: !bc.active }).eq('id', bc.id)
+  await api.patch(`/admin/broadcasts/${bc.id}`, { active: !bc.active })
   bc.active = !bc.active
-}
-
-// ── SQL RUNNER ────────────────────────────────────────────────
-async function runSql() {
-  if (!sqlQuery.value.trim()) return
-  runningSql.value = true; sqlResult.value = null; sqlError.value = ''
-  try {
-    const { data, error } = await supabase.rpc('admin_run_sql', { query: sqlQuery.value })
-    if (error) sqlError.value = error.message
-    else sqlResult.value = data
-  } catch (e) {
-    sqlError.value = e.message
-  }
-  runningSql.value = false
 }
 
 // ── NAVIGATION ────────────────────────────────────────────────
@@ -442,7 +358,6 @@ const tabs = [
   { id: 'moderation', label: 'Modération', icon: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM7 12l2 2 4-4' },
   { id: 'content', label: 'Contenu', icon: 'M4 4v16h16V4zm4 6h8m-8 4h8M8 8h8' },
   { id: 'broadcast', label: 'Diffusion', icon: 'M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 8.8a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 0h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z' },
-  { id: 'sql', label: 'SQL', icon: 'M4 7h16M4 12h10M4 17h7' },
   { id: 'settings', label: 'Paramètres', icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
 ]
 
@@ -465,12 +380,7 @@ const filteredCoinUsers = computed(() => {
 async function loadCoinUsers() {
   loadingCoinUsers.value = true
   try {
-    const result = await withTimeout(
-      supabase.from('profiles')
-        .select('id, username, avatar_url, onb_coins, is_premium, is_official, premium_is_permanent, official_is_permanent, premium_expires_at, official_expires_at')
-        .order('onb_coins', { ascending: false }),
-      10000
-    )
+    const result = await withTimeout(api.get('/admin/users', { query: { sort: 'coins' } }), 10000)
     coinUsers.value = result?.data || []
   } catch (e) { console.warn(e)
   } finally { loadingCoinUsers.value = false }
@@ -480,10 +390,10 @@ async function grantCoins() {
   if (!selectedCoinUser.value || !coinAmount.value) return
   grantingCoins.value = true
   grantResult.value = null
-  const { data, error } = await supabase.rpc('admin_grant_coins', {
-    target_user_id: selectedCoinUser.value.id,
-    coin_amount: parseInt(coinAmount.value),
-    grant_reason: coinReason.value || 'admin_grant'
+  const { data, error } = await api.post('/admin/coins/grant', {
+    user_id: selectedCoinUser.value.id,
+    amount: parseInt(coinAmount.value),
+    reason: coinReason.value || 'admin_grant'
   })
   grantingCoins.value = false
   if (error) {
@@ -498,7 +408,7 @@ async function grantCoins() {
 }
 
 async function setPermament(userId, field, value) {
-  const { error } = await supabase.from('profiles').update({ [field]: value }).eq('id', userId)
+  const { error } = await api.patch(`/admin/users/${userId}`, { [field]: value })
   if (!error) {
     const u = coinUsers.value.find(u => u.id === userId)
     if (u) u[field] = value
@@ -530,41 +440,13 @@ async function loadAnalytics() {
   analyticsError.value = ''
   try {
     const range = analyticsTimeRange.value
-    const daysBack = range === '7d' ? 7 : range === '30d' ? 30 : null
-    const cutoff = daysBack ? new Date(Date.now() - daysBack * 86400000).toISOString() : null
-    const activityCutoff = new Date(Date.now() - 86400000).toISOString()
 
-    const usersQuery = supabase.from('profiles').select('created_at').order('created_at', { ascending: true })
-    if (cutoff) usersQuery.gte('created_at', cutoff)
-    const postsQuery = supabase.from('posts').select('created_at, media_url, user_id')
-    if (cutoff) postsQuery.gte('created_at', cutoff)
-    const commentsQuery = supabase.from('comments').select('created_at, user_id')
-    if (cutoff) commentsQuery.gte('created_at', cutoff)
-    const coinQuery = supabase.from('coin_transactions').select('amount, reason, created_at')
-    if (cutoff) coinQuery.gte('created_at', cutoff)
+    // Données brutes de la période + utilisateurs actifs (24 h) + top créateurs : un seul appel API
+    const res = await withTimeout(api.get('/admin/analytics', { query: { range } }), 10000)
+    if (res?.error) throw res.error
+    const a = res?.data || {}
 
-    const [usersRes, postsRes, commentsRes, coinRes, activePostsRes, activeCommentsRes, activeGlobalRes] = await Promise.all([
-      withTimeout(usersQuery, 10000),
-      withTimeout(postsQuery, 10000),
-      withTimeout(commentsQuery, 10000),
-      withTimeout(coinQuery, 10000),
-      withTimeout(supabase.from('posts').select('user_id').gte('created_at', activityCutoff), 10000),
-      withTimeout(supabase.from('comments').select('user_id').gte('created_at', activityCutoff), 10000),
-      withTimeout(
-        supabase.from('global_messages').select('sender_id').gte('created_at', activityCutoff).eq('deleted', false),
-        10000
-      ),
-    ])
-
-    if (usersRes?.error) throw usersRes.error
-    if (postsRes?.error) throw postsRes.error
-    if (commentsRes?.error) throw commentsRes.error
-    if (coinRes?.error) throw coinRes.error
-    if (activePostsRes?.error) throw activePostsRes.error
-    if (activeCommentsRes?.error) throw activeCommentsRes.error
-    if (activeGlobalRes?.error) throw activeGlobalRes.error
-
-    const usersData = usersRes?.data || []
+    const usersData = a.users || []
     const grouped = {}
     usersData.forEach(u => {
       const date = new Date(u.created_at).toISOString().split('T')[0]
@@ -573,44 +455,17 @@ async function loadAnalytics() {
     userGrowthData.value = Object.entries(grouped).map(([date, count]) => ({ date, count }))
     newSignupsWeek.value = usersData.length
 
-    const postsData = postsRes?.data || []
-    const commentsData = commentsRes?.data || []
+    const postsData = a.posts || []
+    const commentsData = a.comments || []
     const reelsCount = postsData.filter(p => p.media_url?.match(/\.(mp4|webm|mov|m4v)/i)).length
     const postsCount = postsData.length - reelsCount
     contentBreakdown.value = { posts: postsCount, comments: commentsData.length, reels: reelsCount }
     totalEngagement.value = postsData.length + commentsData.length
 
-    const activeUsers = new Set()
-    activePostsRes?.data?.forEach(p => p.user_id && activeUsers.add(p.user_id))
-    activeCommentsRes?.data?.forEach(c => c.user_id && activeUsers.add(c.user_id))
-    activeGlobalRes?.data?.forEach(m => m.sender_id && activeUsers.add(m.sender_id))
-    activeUsersToday.value = activeUsers.size
+    activeUsersToday.value = (a.active_user_ids || []).length
+    topCreators.value = a.top_creators || []
 
-    const creatorCounts = postsData.reduce((acc, post) => {
-      if (!post.user_id) return acc
-      acc[post.user_id] = (acc[post.user_id] || 0) + 1
-      return acc
-    }, {})
-    const topIds = Object.entries(creatorCounts).sort((a, b) => b[1] - a[1]).slice(0, 10)
-    if (topIds.length) {
-      const { data: profilesData, error: profilesError } = await withTimeout(
-        supabase.from('profiles').select('id, username, avatar_url').in('id', topIds.map(([id]) => id)),
-        10000
-      )
-      if (profilesError) throw profilesError
-      const profileMap = {}
-      ;(profilesData || []).forEach(p => { profileMap[p.id] = p })
-      topCreators.value = topIds.map(([id, count]) => ({
-        id,
-        posts_count: count,
-        username: profileMap[id]?.username,
-        avatar_url: profileMap[id]?.avatar_url,
-      }))
-    } else {
-      topCreators.value = []
-    }
-
-    const coinData = coinRes?.data || []
+    const coinData = a.coin_transactions || []
     coinVolume.value = coinData.reduce((sum, t) => sum + Math.abs(t.amount || 0), 0)
     platformRevenue.value = coinData
       .filter(t => ['purchase_premium', 'purchase_official'].includes(t.reason))
@@ -663,13 +518,7 @@ const moderationCounts = computed(() => ({
 async function loadModReports() {
   modReportsLoading.value = true
   try {
-    const query = supabase.from('user_reports').select('*, reporter:reporter_id(*), resolved_by(*)')
-
-    if (reportFilter.value !== 'all') {
-      query.eq('status', reportFilter.value)
-    }
-
-    const { data } = await withTimeout(query.order('created_at', { ascending: false }), 10000)
+    const { data } = await withTimeout(api.get('/admin/reports', { query: { status: reportFilter.value } }), 10000, {})
     modReports.value = data || []
   } catch (e) {
     console.warn('loadModReports error:', e)
@@ -681,10 +530,7 @@ async function loadModReports() {
 async function loadFlaggedContent() {
   flaggedContentLoading.value = true
   try {
-    const { data } = await withTimeout(
-      supabase.from('moderation_flags').select('*').eq('resolved', false).order('created_at', { ascending: false }),
-      10000
-    )
+    const { data } = await withTimeout(api.get('/admin/moderation-flags'), 10000, {})
     flaggedContent.value = data || []
   } catch (e) {
     console.warn('loadFlaggedContent error:', e)
@@ -695,7 +541,7 @@ async function loadFlaggedContent() {
 
 async function resolveFlag(flag) {
   if (!confirm('Mark this flag as resolved?')) return
-  const { error } = await supabase.from('moderation_flags').update({ resolved: true }).eq('id', flag.id)
+  const { error } = await api.patch(`/admin/moderation-flags/${flag.id}`, { resolved: true })
   if (!error) {
     flaggedContent.value = flaggedContent.value.filter(f => f.id !== flag.id)
   }
@@ -704,10 +550,7 @@ async function resolveFlag(flag) {
 async function loadForbiddenWords() {
   forbiddenWordsLoading.value = true
   try {
-    const { data } = await withTimeout(
-      supabase.from('forbidden_words').select('*').order('created_at', { ascending: false }),
-      10000
-    )
+    const { data } = await withTimeout(api.get('/admin/forbidden-words'), 10000, {})
     forbiddenWords.value = data || []
   } catch (e) {
     console.warn('loadForbiddenWords error:', e)
@@ -721,16 +564,15 @@ async function addForbiddenWord() {
   addingForbiddenWord.value = true
   try {
     const { data, error } = await withTimeout(
-      supabase.from('forbidden_words').insert({
+      api.post('/admin/forbidden-words', {
         word: newForbiddenWord.value.trim(),
         severity: newWordSeverity.value,
         enabled: true,
-        created_by: currentUser.value.id
-      }).select(),
-      10000
+      }),
+      10000, {}
     )
     if (!error && data) {
-      forbiddenWords.value.unshift(data[0])
+      forbiddenWords.value.unshift(data)
       newForbiddenWord.value = ''
       newWordSeverity.value = 'medium'
     }
@@ -742,13 +584,13 @@ async function addForbiddenWord() {
 }
 
 async function toggleForbiddenWord(word) {
-  const { error } = await supabase.from('forbidden_words').update({ enabled: !word.enabled }).eq('id', word.id)
+  const { error } = await api.patch(`/admin/forbidden-words/${word.id}`, { enabled: !word.enabled })
   if (!error) word.enabled = !word.enabled
 }
 
 async function deleteForbiddenWord(word) {
   if (!confirm(`Delete forbidden word "${word.word}"?`)) return
-  const { error } = await supabase.from('forbidden_words').delete().eq('id', word.id)
+  const { error } = await api.del(`/admin/forbidden-words/${word.id}`)
   if (!error) {
     forbiddenWords.value = forbiddenWords.value.filter(w => w.id !== word.id)
   }
@@ -757,10 +599,7 @@ async function deleteForbiddenWord(word) {
 async function loadModerationUsers() {
   moderationUsersLoading.value = true
   try {
-    const { data } = await withTimeout(
-      supabase.from('profiles').select('id, username, avatar_url, warnings_count, is_banned, updated_at').order('warnings_count', { ascending: false }),
-      10000
-    )
+    const { data } = await withTimeout(api.get('/admin/users', { query: { sort: 'warnings' } }), 10000, {})
     moderationUsers.value = data || []
   } catch (e) {
     console.warn('loadModerationUsers error:', e)
@@ -774,23 +613,11 @@ async function warnUser(userId) {
   try {
     const user = moderationUsers.value.find(u => u.id === userId)
     if (user) {
-      const newWarnings = (user.warnings_count || 0) + 1
-      const willBan = newWarnings >= 2
-
-      const { error } = await supabase.from('profiles').update({
-        warnings_count: newWarnings,
-        is_banned: willBan ? true : user.is_banned
-      }).eq('id', userId)
-
-      if (!error) {
-        user.warnings_count = newWarnings
-        if (willBan) user.is_banned = true
-        await supabase.from('moderation_action_logs').insert({
-          admin_id: currentUser.value.id,
-          action_type: 'warn_user',
-          target_user_id: userId,
-          reason
-        })
+      // +1 avertissement (bannissement au 2e) et journalisation : côté API
+      const { data, error } = await api.post(`/admin/users/${userId}/warn`, { reason })
+      if (!error && data) {
+        user.warnings_count = data.warnings_count
+        user.is_banned = data.is_banned
         warningReasonInput.value = ''
       }
     }
@@ -804,23 +631,12 @@ async function removeWarning(userId) {
   if (!user || !user.warnings_count) return
   if (!confirm('Remove one warning from this user?')) return
   const reason = warningReasonInput.value.trim() || 'Admin removed warning'
-  const newWarnings = Math.max(0, (user.warnings_count || 0) - 1)
-  const updates = { warnings_count: newWarnings }
-  if (user.is_banned && newWarnings < 2) {
-    updates.is_banned = false
-  }
   try {
-    const { error } = await supabase.from('profiles').update(updates).eq('id', userId)
-    if (!error) {
-      user.warnings_count = newWarnings
-      if (updates.is_banned === false) user.is_banned = false
-      const actionType = updates.is_banned === false ? 'unban_user' : 'warn_user'
-      await supabase.from('moderation_action_logs').insert({
-        admin_id: currentUser.value.id,
-        action_type: actionType,
-        target_user_id: userId,
-        reason
-      })
+    // -1 avertissement (débannissement sous le seuil) et journalisation : côté API
+    const { data, error } = await api.post(`/admin/users/${userId}/unwarn`, { reason })
+    if (!error && data) {
+      user.warnings_count = data.warnings_count
+      user.is_banned = data.is_banned
       warningReasonInput.value = ''
     }
   } catch (e) {
@@ -831,16 +647,10 @@ async function removeWarning(userId) {
 async function banUser(userId, reason) {
   if (!confirm('Ban this user?')) return
   try {
-    const { error } = await supabase.from('profiles').update({ is_banned: true }).eq('id', userId)
+    const { error } = await api.post(`/admin/users/${userId}/ban`, { reason: reason || 'Admin ban' })
     if (!error) {
       const user = moderationUsers.value.find(u => u.id === userId)
       if (user) user.is_banned = true
-      await supabase.from('moderation_action_logs').insert({
-        admin_id: currentUser.value.id,
-        action_type: 'ban_user',
-        target_user_id: userId,
-        reason: reason || 'Admin ban'
-      })
     }
   } catch (e) {
     console.warn('banUser error:', e)
@@ -873,10 +683,7 @@ const contentQuality = ref([])
 async function loadFeaturedContent() {
   featuredContentLoading.value = true
   try {
-    const { data } = await withTimeout(
-      supabase.from('featured_content').select('*').order('position', { ascending: true }),
-      10000
-    )
+    const { data } = await withTimeout(api.get('/admin/featured'), 10000, {})
     featuredContent.value = data || []
   } catch (e) {
     console.warn('loadFeaturedContent error:', e)
@@ -890,18 +697,17 @@ async function addFeaturedContent(contentId) {
   addingFeaturedContent.value = true
   try {
     const { data, error } = await withTimeout(
-      supabase.from('featured_content').insert({
+      api.post('/admin/featured', {
         content_type: 'post',
-        content_id: contentId,
-        featured_by: currentUser.value.id,
-        featured_until: featuredUntilDate.value,
+        content_id: String(contentId),
+        featured_until: new Date(featuredUntilDate.value).toISOString(),
         section: featuredSection.value,
         position: featuredContent.value.length
-      }).select(),
-      10000
+      }),
+      10000, {}
     )
     if (!error && data) {
-      featuredContent.value.push(data[0])
+      featuredContent.value.push(data)
       featuredUntilDate.value = null
     }
   } catch (e) {
@@ -913,7 +719,7 @@ async function addFeaturedContent(contentId) {
 
 async function removeFeaturedContent(id) {
   if (!confirm('Remove featured content?')) return
-  const { error } = await supabase.from('featured_content').delete().eq('id', id)
+  const { error } = await api.del(`/admin/featured/${id}`)
   if (!error) {
     featuredContent.value = featuredContent.value.filter(f => f.id !== id)
   }
@@ -922,15 +728,8 @@ async function removeFeaturedContent(id) {
 async function loadTrendingContent() {
   trendingContentLoading.value = true
   try {
-    const timeWindowMs = trendingTimeWindow.value === '24h' ? 86400000 : trendingTimeWindow.value === '7d' ? 604800000 : Infinity
-    const cutoff = new Date(Date.now() - timeWindowMs).toISOString()
-
     const { data: posts } = await withTimeout(
-      supabase.from('posts').select('id, caption, user_id, created_at, profiles(username, avatar_url), likes(count), comments(count)')
-        .gte('created_at', cutoff)
-        .order('created_at', { ascending: false }),
-      10000
-    )
+      api.get('/admin/trending', { query: { window: trendingTimeWindow.value } }), 10000, {})
 
     const withScores = (posts || []).map(p => {
       const engagement = (p.likes?.[0]?.count || 0) + (p.comments?.[0]?.count || 0)
@@ -948,10 +747,7 @@ async function loadTrendingContent() {
 async function loadCurationRules() {
   curationRulesLoading.value = true
   try {
-    const { data } = await withTimeout(
-      supabase.from('content_curation_rules').select('*').order('created_at', { ascending: false }),
-      10000
-    )
+    const { data } = await withTimeout(api.get('/admin/curation-rules'), 10000, {})
     curationRules.value = data || []
   } catch (e) {
     console.warn('loadCurationRules error:', e)
@@ -965,18 +761,17 @@ async function addCurationRule() {
   addingCurationRule.value = true
   try {
     const { data, error } = await withTimeout(
-      supabase.from('content_curation_rules').insert({
+      api.post('/admin/curation-rules', {
         rule_name: newRuleName.value,
         rule_type: newRuleType.value,
         criteria: { minEngagement: newRuleMinEngagement.value },
         action: newRuleType.value === 'boost' ? 'feature' : 'hide',
         enabled: true,
-        created_by: currentUser.value.id
-      }).select(),
-      10000
+      }),
+      10000, {}
     )
     if (!error && data) {
-      curationRules.value.unshift(data[0])
+      curationRules.value.unshift(data)
       newRuleName.value = ''
       newRuleType.value = 'boost'
       newRuleMinEngagement.value = 100
@@ -989,13 +784,13 @@ async function addCurationRule() {
 }
 
 async function toggleCurationRule(rule) {
-  const { error } = await supabase.from('content_curation_rules').update({ enabled: !rule.enabled }).eq('id', rule.id)
+  const { error } = await api.patch(`/admin/curation-rules/${rule.id}`, { enabled: !rule.enabled })
   if (!error) rule.enabled = !rule.enabled
 }
 
 async function deleteCurationRule(id) {
   if (!confirm('Delete this rule?')) return
-  const { error } = await supabase.from('content_curation_rules').delete().eq('id', id)
+  const { error } = await api.del(`/admin/curation-rules/${id}`)
   if (!error) {
     curationRules.value = curationRules.value.filter(r => r.id !== id)
   }
@@ -1006,14 +801,14 @@ const isTrollMode = ref(false)
 const savingTrollMode = ref(false)
 
 async function loadSettings() {
-  const { data } = await supabase.from('site_settings').select('is_troll_mode').eq('id', 1).maybeSingle();
+  const { data } = await api.get('/site-settings');
   if (data) isTrollMode.value = data.is_troll_mode;
 }
 
 async function toggleTrollMode() {
   savingTrollMode.value = true;
   const newVal = !isTrollMode.value;
-  const { error } = await supabase.from('site_settings').update({ is_troll_mode: newVal }).eq('id', 1);
+  const { error } = await api.patch('/admin/site-settings', { is_troll_mode: newVal });
   if (!error) isTrollMode.value = newVal;
   savingTrollMode.value = false;
 }
@@ -1126,10 +921,6 @@ onMounted(checkAdmin)
             <button class="qa-btn" @click="switchTab('globalchat'); loadGlobalMsgs()">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/></svg>
               Modérer le chat global
-            </button>
-            <button class="qa-btn" @click="switchTab('sql')">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h7"/></svg>
-              Exécuter SQL
             </button>
           </div>
         </div>
@@ -1628,36 +1419,6 @@ onMounted(checkAdmin)
         </div>
       </div>
 
-      <!-- ── SQL ── -->
-      <div v-else-if="activeTab === 'sql'" class="tab-section">
-        <div class="form-card">
-          <h3>Exécuter SQL</h3>
-          <p class="form-hint">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;display:inline;vertical-align:text-bottom;margin-right:4px"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-            Requiert la fonction RPC <code>admin_run_sql</code> — voir le SQL de migration.
-          </p>
-          <textarea v-model="sqlQuery" placeholder="SELECT * FROM profiles LIMIT 10;" rows="6" class="form-textarea code"></textarea>
-          <button class="btn-purple" @click="runSql" :disabled="runningSql || !sqlQuery.trim()">
-            {{ runningSql ? 'Exécution…' : 'Exécuter' }}
-          </button>
-        </div>
-        <div v-if="sqlError" class="error-banner" style="margin-top:12px">{{ sqlError }}</div>
-        <div v-if="sqlResult !== null" class="sql-result">
-          <pre>{{ JSON.stringify(sqlResult, null, 2) }}</pre>
-        </div>
-
-        <div class="form-card" style="margin-top:16px">
-          <h3>Snippets utiles</h3>
-          <div class="snippets">
-            <button class="snippet-btn" @click="sqlQuery = `SELECT id, username, is_admin, is_premium FROM profiles ORDER BY updated_at DESC LIMIT 20;`">Voir tous les users</button>
-            <button class="snippet-btn" @click="sqlQuery = `UPDATE profiles SET is_premium = true WHERE username = 'USERNAME';`">Activer Premium</button>
-            <button class="snippet-btn" @click="sqlQuery = `SELECT COUNT(*) as total FROM global_messages WHERE deleted = false;`">Compter messages globaux</button>
-            <button class="snippet-btn" @click="sqlQuery = `DELETE FROM global_messages WHERE deleted = true;`">Purger messages supprimés</button>
-            <button class="snippet-btn" @click="sqlQuery = `SELECT g.name, COUNT(gm.user_id) as members FROM groups g LEFT JOIN group_members gm ON g.id = gm.group_id GROUP BY g.id ORDER BY members DESC;`">Group stats</button>
-          </div>
-        </div>
-      </div>
-
       <!-- ANALYTICS TAB -->
       <div v-else-if="activeTab === 'analytics'" class="tab-section">
         <div class="section-bar">
@@ -1806,11 +1567,11 @@ onMounted(checkAdmin)
                 <p><small>{{ fmtDate(report.created_at) }}</small></p>
               </div>
               <div class="report-actions">
-                <button class="action-btn approve" @click="async () => { const {error} = await supabase.from('user_reports').update({status:'resolved'}).eq('id',report.id); if(!error) report.status='resolved' }">
+                <button class="action-btn approve" @click="async () => { const {error} = await api.patch(`/admin/reports/${report.id}`, {status:'resolved'}); if(!error) report.status='resolved' }">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 12 9 17 20 6"/></svg>
                   Approve
                 </button>
-                <button class="action-btn reject" @click="async () => { const {error} = await supabase.from('user_reports').update({status:'dismissed'}).eq('id',report.id); if(!error) report.status='dismissed' }">
+                <button class="action-btn reject" @click="async () => { const {error} = await api.patch(`/admin/reports/${report.id}`, {status:'dismissed'}); if(!error) report.status='dismissed' }">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                   Reject
                 </button>
@@ -2181,9 +1942,6 @@ onMounted(checkAdmin)
 .bc-subtab { padding:7px 18px; border-radius:9px; border:none; font-family:'Instrument Sans',sans-serif; font-size:.83rem; font-weight:600; cursor:pointer; color:var(--text-2); background:transparent; transition:all .18s; }
 .bc-subtab.active { background:white; color:var(--purple); box-shadow:0 1px 4px rgba(76,16,224,.12); }
 
-/* SQL result */
-.sql-result { background:#1e1b2e; border-radius:12px; padding:16px; overflow:auto; max-height:400px; }
-.sql-result pre { color:#e2d9ff; font-family:monospace; font-size:.82rem; line-height:1.5; white-space:pre-wrap; }
 .snippets { display:flex; flex-wrap:wrap; gap:8px; }
 .snippet-btn { padding:6px 12px; background:#f0eeff; color:var(--purple); border:1.5px solid #e2d9ff; border-radius:8px; font-size:.78rem; font-weight:600; cursor:pointer; font-family:'Instrument Sans',sans-serif; transition:all .15s; }
 .snippet-btn:hover { background:#e5daff; border-color:var(--purple); }

@@ -88,6 +88,36 @@ export default async function meRoutes(app) {
     })
   })
 
+  // 30 dernières transactions ONB Coins.
+  app.get('/coin-transactions', async (request) => {
+    return request.tx(async (c) => {
+      const { rows } = await c.query(
+        `SELECT * FROM public.coin_transactions WHERE user_id = $1
+          ORDER BY created_at DESC LIMIT 30`,
+        [request.user.id],
+      )
+      return rows
+    })
+  })
+
+  // Achat d'un abonnement en ONB Coins (fonction SECURITY DEFINER buy_subscription).
+  // Retourne { success, new_balance, expires_at, … } ou { success: false, error }.
+  app.post('/subscriptions', {
+    schema: {
+      body: {
+        type: 'object',
+        required: ['type'],
+        additionalProperties: false,
+        properties: { type: { type: 'string', enum: ['premium', 'official'] } },
+      },
+    },
+  }, async (request) => {
+    return request.tx(async (c) => {
+      const { rows } = await c.query('SELECT public.buy_subscription($1) AS result', [request.body.type])
+      return rows[0].result
+    })
+  })
+
   // Données de la barre latérale (App.vue) : suivis, abonnés, amis mutuels.
   app.get('/social', async (request) => {
     return request.tx(async (c) => {
