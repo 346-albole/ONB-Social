@@ -522,18 +522,29 @@ BEGIN
 END;
 $$;
 
+-- Désactive les abonnements premium / officiel arrivés à échéance.
+-- Appelée chaque nuit par la Function timer (rôle JOBS_DB_USER).
+-- Retourne le nombre d'abonnements expirés (premium + officiel).
 CREATE OR REPLACE FUNCTION public.expire_lapsed_subscriptions()
-RETURNS void
+RETURNS integer
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public
 AS $$
+DECLARE
+  premium_count  integer;
+  official_count integer;
 BEGIN
   UPDATE public.profiles SET is_premium = false
    WHERE is_premium AND NOT premium_is_permanent
      AND premium_expires_at IS NOT NULL AND premium_expires_at < now();
+  GET DIAGNOSTICS premium_count = ROW_COUNT;
+
   UPDATE public.profiles SET is_official = false
    WHERE is_official AND NOT official_is_permanent
      AND official_expires_at IS NOT NULL AND official_expires_at < now();
+  GET DIAGNOSTICS official_count = ROW_COUNT;
+
+  RETURN premium_count + official_count;
 END;
 $$;
 
