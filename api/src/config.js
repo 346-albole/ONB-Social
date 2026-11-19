@@ -10,6 +10,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const envFile = path.join(repoRoot, '.env')
 if (existsSync(envFile)) dotenv.config({ path: envFile, quiet: true })
 
+// `npm start` passe --production : force le mode production (multi-plateforme,
+// sans dépendre de la syntaxe VAR=valeur du shell). En local : `npm run dev`.
+if (process.argv.includes('--production')) process.env.NODE_ENV = 'production'
+
 const env = process.env
 
 function bool(value, fallback = false) {
@@ -31,8 +35,8 @@ const isProduction = env.NODE_ENV === 'production'
 const port = Number(env.PORT || 3000)
 
 const devAuthEnabled = bool(env.DEV_AUTH_ENABLED)
-if (devAuthEnabled && isProduction && !bool(env.DEV_AUTH_ALLOW_IN_PRODUCTION)) {
-  throw new Error('DEV_AUTH_ENABLED=true est refusé quand NODE_ENV=production.')
+if (devAuthEnabled && isProduction) {
+  throw new Error('Auth dev refusée en production : DEV_AUTH_ENABLED doit être false (utiliser `npm run dev` en local).')
 }
 
 export const config = {

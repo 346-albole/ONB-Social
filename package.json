@@ -9,8 +9,8 @@
     "dev:api": "node --watch-path=api/src api/src/server.js",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node api/src/server.js",
-    "db:init": "node api/scripts/db-init.js",
+    "start": "node api/src/server.js --production",
+    "db:migrate": "node api/scripts/db-migrate.js",
     "db:make-admin": "node api/scripts/make-admin.js"
   },
   "dependencies": {

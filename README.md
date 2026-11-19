@@ -10,8 +10,9 @@ pour pouvoir être branchés plus tard sur Entra ID, Blob Storage et Web PubSub.
 ## Prérequis
 
 - Node.js ≥ 20
-- PostgreSQL 16, local ou distant, avec un compte propriétaire (superuser en
-  local)
+- PostgreSQL 16 (Azure Database for PostgreSQL : 16.15), local ou distant,
+  avec un compte propriétaire (superuser en local, compte admin du serveur sur
+  Azure)
 
 ## Installation
 
@@ -23,17 +24,31 @@ cp .env.example .env      # puis adapter les valeurs (voir ci-dessous)
 Créez une base vide, par exemple `createdb onb_social`, puis initialisez-la :
 
 ```sh
-npm run db:init
+npm run db:migrate
 ```
 
-Cette commande applique `db/schema.sql` et `db/seed.sql` si la base est vierge.
-Elle crée ou met à jour ensuite le rôle de connexion de l'API, avec
-l'utilisateur et le mot de passe de `DATABASE_URL`. Ce rôle n'est pas
-superuser : il endosse `authenticated` ou `anon` à chaque requête, et les
-policies RLS s'appliquent.
+`db:migrate` se connecte avec `DATABASE_ADMIN_URL` (en TLS si
+`DATABASE_SSL=true`) et peut être relancé sans risque :
 
-- `npm run db:init -- --reset` repart de zéro (supprime les schémas `public` et
-  `auth`). Refusé si `NODE_ENV=production`.
+1. `db/schema.sql` n'est appliqué que si la base est vierge. Ce n'est pas un
+   système de migrations versionnées : une évolution future du schéma devra
+   être appliquée par un script dédié.
+2. `db/seed.sql` est rejoué à chaque fois ; il est idempotent.
+3. Le rôle applicatif `API_DB_USER` / `API_DB_PASSWORD` est créé ou mis à jour.
+   Il n'est pas superuser et n'a aucun droit direct (`NOINHERIT`). Il endosse
+   `authenticated` ou `anon` à chaque requête, et les policies RLS
+   s'appliquent. C'est le rôle de `DATABASE_URL` ; l'API n'utilise jamais
+   l'admin.
+4. Si `JOBS_DB_USER` / `JOBS_DB_PASSWORD` sont définis, le rôle des tâches
+   planifiées est créé. Il peut seulement se connecter et exécuter
+   `expire_lapsed_subscriptions()`, sans aucun accès aux tables.
+
+Pour la base Azure, lancez la commande depuis un poste avec `DATABASE_SSL=true`
+et l'IP du poste autorisée dans le pare-feu du serveur.
+
+- `npm run db:migrate -- --reset` repart de zéro en supprimant les schémas
+  `public` et `auth`. Commande réservée à une base locale : elle est refusée si
+  `NODE_ENV=production` ou `DATABASE_SSL=true`.
 
 ## Lancement en développement
 
@@ -53,12 +68,29 @@ première connexion, et le même nom redonne toujours le même compte.
 ```sh
 npm install
 npm run build             # génère dist/
-npm start                 # API + front buildé sur $PORT, fallback SPA vers index.html
+npm start                 # mode production : API + front buildé sur $PORT
 ```
 
-En production, les variables sont définies dans les « App settings ». Désactivez
-le mode dev : `DEV_AUTH_ENABLED=false`. L'API refuse de démarrer si
-`NODE_ENV=production` et que le mode dev est actif.
+`npm start` force `NODE_ENV=production`. Il sert le front buildé, avec renvoi
+vers `index.html` pour les routes de l'app, et refuse de démarrer si
+`DEV_AUTH_ENABLED=true`. En local, utilisez `npm run dev`.
+
+En production, les variables sont définies dans les « App settings ».
+`DATABASE_URL` y utilise le rôle applicatif `API_DB_USER`, avec
+`DATABASE_SSL=true`.
+
+### Rôles PostgreSQL
+
+| Rôle | Utilisé par | Droits |
+|---|---|---|
+| admin du serveur (`DATABASE_ADMIN_URL`) | `db:migrate`, `db:make-admin`, depuis un poste ou la CI | propriétaire du schéma |
+| `API_DB_USER` (`DATABASE_URL`) | API (App Service) | aucun droit direct ; endosse `anon` / `authenticated`, RLS appliqué |
+| `JOBS_DB_USER` | Function timer (Phase 7) | `CONNECT` et `EXECUTE` sur `expire_lapsed_subscriptions()` uniquement |
+| `anon`, `authenticated` | rôles RLS (`NOLOGIN`) | droits sur les tables, filtrés par les policies |
+
+La Function timer utilise donc `JOBS_DB_USER`. Elle ne peut rien faire d'autre
+qu'appeler la fonction : `SECURITY DEFINER` l'exécute avec les droits de son
+propriétaire, ce qui lui permet de mettre à jour les profils expirés.
 
 ## Créer un compte admin
 
@@ -82,7 +114,9 @@ La liste complète et commentée est dans `.env.example`. Principales variables 
 |---|---|
 | `PORT` | Port HTTP de l'API (et du front buildé) |
 | `DATABASE_URL` | Connexion de l'API (rôle non-superuser) |
-| `DATABASE_ADMIN_URL` | Connexion propriétaire, uniquement pour `db:init` / `db:make-admin` |
+| `DATABASE_ADMIN_URL` | Connexion propriétaire, uniquement pour `db:migrate` / `db:make-admin` |
+| `API_DB_USER`, `API_DB_PASSWORD` | Rôle applicatif créé par `db:migrate` (utilisateur de `DATABASE_URL`) |
+| `JOBS_DB_USER`, `JOBS_DB_PASSWORD` | Rôle de la Function timer (optionnel) |
 | `DATABASE_SSL` | `true` pour imposer TLS (Azure) |
 | `AUTH_ISSUER`, `AUTH_AUDIENCE`, `AUTH_JWKS_URL` | Validation générique des JWT |
 | `AUTH_USER_ID_CLAIM` | Claim portant l'identifiant (GUID) de l'utilisateur, `oid` par défaut |
@@ -100,7 +134,7 @@ et les médias (`data/`) sont ignorés par git.
 api/                 API Fastify
   src/auth/          validation JWT, création du profil, fournisseur dev
   src/routes/        endpoints par domaine
-  scripts/           db-init, make-admin
+  scripts/           db-migrate, make-admin
 db/                  schema.sql (schéma consolidé + RLS), seed.sql
 src/                 front Vue
   lib/api.js         client unique de l'API
