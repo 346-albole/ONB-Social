@@ -147,6 +147,7 @@ export default async function adminRoutes(app) {
       `INSERT INTO public.admin_commands (target_user_id, admin_id, command) VALUES ($1, $2, 'reload')`,
       [request.params.id, request.user.id],
     ))
+    request.server.realtime.publish(`user:${request.params.id}`, 'command', { command: 'reload' })
     return reply.code(201).send({ sent: true })
   })
 
@@ -256,12 +257,14 @@ export default async function adminRoutes(app) {
   app.delete('/global-messages/:id', { schema: { params: bigintParam() } }, async (request, reply) => {
     const { rowCount } = await request.tx((c) => c.query('DELETE FROM public.global_messages WHERE id = $1', [request.params.id]))
     if (!rowCount) throw notFound()
+    request.server.realtime.publish('global-chat', 'message:deleted', { id: request.params.id })
     return reply.code(204).send()
   })
 
   // Vide tout le chat global.
   app.delete('/global-messages', async (request, reply) => {
     await request.tx((c) => c.query('DELETE FROM public.global_messages'))
+    request.server.realtime.publish('global-chat', 'messages:cleared', {})
     return reply.code(204).send()
   })
 
@@ -486,9 +489,13 @@ export default async function adminRoutes(app) {
     schema: {
       body: { type: 'object', required: ['is_troll_mode'], additionalProperties: false, properties: { is_troll_mode: { type: 'boolean' } } },
     },
-  }, async (request) => request.tx(async (c) => (await c.query(
-    `UPDATE public.site_settings SET is_troll_mode = $1, updated_at = now() WHERE id = 1
-     RETURNING is_troll_mode, updated_at`,
-    [request.body.is_troll_mode],
-  )).rows[0]))
+  }, async (request) => {
+    const settings = await request.tx(async (c) => (await c.query(
+      `UPDATE public.site_settings SET is_troll_mode = $1, updated_at = now() WHERE id = 1
+       RETURNING is_troll_mode, updated_at`,
+      [request.body.is_troll_mode],
+    )).rows[0])
+    request.server.realtime.publish('site-settings', 'updated', settings)
+    return settings
+  })
 }

@@ -1,5 +1,5 @@
-import { supabase } from './supabaseClient'
 import { api } from './api'
+import { realtime } from './realtime'
 import { ref } from 'vue'
 
 /**
@@ -152,13 +152,11 @@ export async function syncGlobalSettings() {
       isTrollMode.value = data.is_troll_mode;
     }
 
-    supabase.channel('public:site_settings')
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'site_settings', filter: 'id=eq.1' }, payload => {
-        if (payload.new) {
-          isTrollMode.value = payload.new.is_troll_mode;
-        }
-      })
-      .subscribe();
+    realtime.subscribe('site-settings', (event, payload) => {
+      if (event === 'updated' && payload) {
+        isTrollMode.value = payload.is_troll_mode;
+      }
+    });
   } catch (err) {
     console.error('[ONB-IA] Error syncing settings', err);
   }

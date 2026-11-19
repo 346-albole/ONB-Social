@@ -91,11 +91,12 @@ export default async function postRoutes(app) {
     const { caption = null, media_url: mediaUrl } = request.body
     const post = await request.tx(async (c) => {
       const { rows } = await c.query(
-        'INSERT INTO public.posts (user_id, caption, media_url) VALUES ($1, $2, $3) RETURNING *',
+        'INSERT INTO public.posts (user_id, caption, media_url) VALUES ($1, $2, $3) RETURNING id',
         [request.user.id, caption, mediaUrl],
       )
-      return rows[0]
+      return fetchPost(c, rows[0].id)
     })
+    request.server.realtime.publish('feed', 'post:created', post)
     return reply.code(201).send(post)
   })
 
@@ -104,6 +105,7 @@ export default async function postRoutes(app) {
     const { rowCount } = await request.tx((c) =>
       c.query('DELETE FROM public.posts WHERE id = $1', [request.params.id]))
     if (!rowCount) throw notFound('Post introuvable ou non autorisé')
+    request.server.realtime.publish('feed', 'post:deleted', { id: request.params.id })
     return reply.code(204).send()
   })
 
@@ -113,18 +115,20 @@ export default async function postRoutes(app) {
   })
 
   app.put('/:id/like', { schema: { params: bigintParam() } }, async (request) => {
-    await request.tx((c) => c.query(
-      'INSERT INTO public.likes (user_id, post_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+    const { rows } = await request.tx((c) => c.query(
+      'INSERT INTO public.likes (user_id, post_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id, user_id, post_id',
       [request.user.id, request.params.id],
     ))
+    if (rows[0]) request.server.realtime.publish('feed', 'like:created', rows[0])
     return { liked: true }
   })
 
   app.delete('/:id/like', { schema: { params: bigintParam() } }, async (request) => {
-    await request.tx((c) => c.query(
+    const { rowCount } = await request.tx((c) => c.query(
       'DELETE FROM public.likes WHERE user_id = $1 AND post_id = $2',
       [request.user.id, request.params.id],
     ))
+    if (rowCount) request.server.realtime.publish('feed', 'like:deleted', { user_id: request.user.id, post_id: request.params.id })
     return { liked: false }
   })
 
@@ -146,6 +150,7 @@ export default async function postRoutes(app) {
       )
       return fetchComment(c, rows[0].id)
     })
+    request.server.realtime.publish('feed', 'comment:created', { post_id: request.params.id, comment })
     return reply.code(201).send(comment)
   })
 }

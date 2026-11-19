@@ -71,6 +71,18 @@ export const config = {
   // Front buildé (vite build) servi par l'API, avec fallback SPA.
   staticDir: resolveDir(env.STATIC_DIR, 'dist'),
 
-  // Dossier des fichiers uploadés (adaptateur stockage « disque local »).
-  mediaDir: resolveDir(env.MEDIA_DIR, 'data/media'),
+  // Adaptateur de stockage de fichiers (voir api/src/storage).
+  storage: {
+    provider: env.STORAGE_PROVIDER || 'local',
+    // Disque local : dossier des médias (prod App Service : /home/data/media)
+    mediaDir: resolveDir(env.MEDIA_DIR, 'data/media'),
+    // Préfixe d'URL sous lequel l'API sert les médias
+    publicPath: env.MEDIA_PUBLIC_PATH || '/media',
+    maxUploadBytes: Number(env.MAX_UPLOAD_MB || 50) * 1024 * 1024,
+  },
+
+  // Adaptateur temps réel (voir api/src/realtime).
+  realtime: {
+    provider: env.REALTIME_PROVIDER || 'ws',
+  },
 }

@@ -1,7 +1,7 @@
 <script setup>
 import { RouterView, useRouter, useRoute } from 'vue-router'
-import { supabase } from './lib/supabaseClient'
 import { api } from './lib/api'
+import { realtime } from './lib/realtime'
 import { auth } from './lib/auth'
 import { initAuth, sessionRef } from './lib/authStore'
 import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
@@ -20,7 +20,7 @@ const appIsReady = ref(false)
 let visibilityHandler = null
 let hiddenAt = 0            // tracks when the tab was hidden
 let stopAuthWatch = null    // auth module watcher
-let commandsSub = null      // supabase realtime handle for admin_commands
+let commandsSub = null      // désabonnement du canal des commandes admin (user:<id>)
 
 onMounted(async () => {
   try {
@@ -104,17 +104,15 @@ const openChat = (friendId) => {
 }
 
 function initAdminCommands(userId) {
-  commandsSub?.unsubscribe()
-  commandsSub = supabase.channel(`admin_cmd_${userId}`)
-    .on('postgres_changes', {
-      event: 'INSERT', schema: 'public', table: 'admin_commands', filter: `target_user_id=eq.${userId}`
-    }, payload => {
-      if (payload.new.command === 'reload') window.location.reload()
-    }).subscribe()
+  commandsSub?.()
+  // Commandes envoyées par un admin (rechargement à distance)
+  commandsSub = realtime.subscribe(`user:${userId}`, (event, payload) => {
+    if (event === 'command' && payload?.command === 'reload') window.location.reload()
+  })
 }
 
 function destroyAdminCommands() {
-  commandsSub?.unsubscribe()
+  commandsSub?.()
   commandsSub = null
 }
 

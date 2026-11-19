@@ -91,6 +91,8 @@ export default async function messageRoutes(app) {
       )
       return rows[0]
     })
+    // Boîte de réception du destinataire (dm:<receiverId>)
+    request.server.realtime.publish(`dm:${message.receiver_id}`, 'message:created', message)
     return reply.code(201).send(message)
   })
 
@@ -128,6 +130,7 @@ export default async function messageRoutes(app) {
       return rows[0]
     })
     if (!row) throw notFound('Message introuvable ou non autorisé')
+    request.server.realtime.publish(`dm:${row.receiver_id}`, 'message:updated', row)
     return row
   })
 
@@ -142,6 +145,7 @@ export default async function messageRoutes(app) {
       return rows[0]
     })
     if (!row) throw notFound('Message introuvable ou non autorisé')
+    request.server.realtime.publish(`dm:${row.receiver_id}`, 'message:updated', row)
     return row
   })
 }

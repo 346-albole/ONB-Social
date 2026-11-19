@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { supabase } from '../lib/supabaseClient'
 import { api } from '../lib/api'
+import { uploadFile } from '../lib/storage'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout } from '../lib/withTimeout'
 import { areNotifsEnabled, setNotifsEnabled, getPermissionStatus } from '../lib/pushNotifications'
@@ -127,7 +127,7 @@ async function updateProfile() {
     setTimeout(() => saveSuccess.value = false, 3000)
     emit('profile-updated', { username: updated.username, avatar_url: updated.avatar_url, username_color: updated.username_color })
   } else {
-    saveError.value = 'Save blocked — check Supabase RLS UPDATE policy on profiles.'
+    saveError.value = 'Save blocked — profile update was not permitted.'
   }
   saving.value = false
 }
@@ -138,11 +138,9 @@ async function uploadAvatar(e) {
   const isVideo = file.type.startsWith('video/')
   if (isVideo && !isPremium.value) { alert('Video avatars require Premium.'); return }
   saving.value = true
-  const ext = file.name.split('.').pop()
-  const fileName = `avatars/${authUser.value.id}_${Date.now()}.${ext}`
-  const { error: upErr } = await supabase.storage.from('media').upload(fileName, file)
+  
+  const { url: publicUrl, error: upErr } = await uploadFile(file, 'avatar')
   if (upErr) { saving.value = false; return }
-  const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName)
   const { data: updated } = await api.patch('/me', { avatar_url: publicUrl })
   if (updated) {
     profile.value.avatar_url = updated.avatar_url
@@ -155,10 +153,8 @@ async function uploadChatBg(e) {
   const file = e.target.files[0]
   if (!file || !isPremium.value) return
   saving.value = true
-  const fileName = `chatbg/${authUser.value.id}_${Date.now()}`
-  const { error: upErr } = await supabase.storage.from('media').upload(fileName, file)
+  const { url: publicUrl, error: upErr } = await uploadFile(file, 'chat-bg')
   if (upErr) { saving.value = false; return }
-  const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName)
   const { data: updated } = await api.patch('/me', { chat_bg_url: publicUrl })
   if (updated) {
     profile.value.chat_bg_url = updated.chat_bg_url
@@ -179,10 +175,8 @@ async function uploadBannerImage(e) {
   const file = e.target.files[0]
   if (!file || !isPremium.value) return
   saving.value = true
-  const fn = `banners/${authUser.value.id}_${Date.now()}`
-  const { error: upErr } = await supabase.storage.from('media').upload(fn, file)
+  const { url: publicUrl, error: upErr } = await uploadFile(file, 'banner')
   if (upErr) { saving.value = false; return }
-  const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fn)
   const { data: updated } = await api.patch('/me', { banner_url: publicUrl })
   if (updated) profile.value.banner_url = updated.banner_url
   saving.value = false
@@ -200,10 +194,8 @@ async function uploadCustomBadge(e) {
   const file = e.target.files[0]
   if (!file || !isPremium.value) return
   saving.value = true
-  const fn = `badges/${authUser.value.id}_${Date.now()}`
-  const { error: upErr } = await supabase.storage.from('media').upload(fn, file)
+  const { url: publicUrl, error: upErr } = await uploadFile(file, 'badge')
   if (upErr) { saving.value = false; alert(upErr.message); return }
-  const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fn)
   const { data: updated } = await api.patch('/me', { custom_badge_url: publicUrl })
   if (updated) profile.value.custom_badge_url = updated.custom_badge_url
   saving.value = false

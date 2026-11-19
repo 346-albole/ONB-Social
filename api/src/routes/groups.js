@@ -79,11 +79,12 @@ export default async function groupRoutes(app) {
 
   // Rejoindre un groupe public (RLS : les groupes privés passent par une invitation).
   app.post('/:id/join', { schema: { params: uuidParam() } }, async (request) => {
-    await request.tx((c) => c.query(
+    const { rowCount } = await request.tx((c) => c.query(
       `INSERT INTO public.group_members (group_id, user_id, role) VALUES ($1, $2, 'member')
        ON CONFLICT DO NOTHING`,
       [request.params.id, request.user.id],
     ))
+    if (rowCount) request.server.realtime.publish(`group:${request.params.id}`, 'member:joined', { user_id: request.user.id })
     return { member: true }
   })
 
@@ -115,11 +116,12 @@ export default async function groupRoutes(app) {
       },
     },
   }, async (request, reply) => {
-    await request.tx((c) => c.query(
+    const { rowCount } = await request.tx((c) => c.query(
       `INSERT INTO public.group_members (group_id, user_id, role) VALUES ($1, $2, 'member')
        ON CONFLICT DO NOTHING`,
       [request.params.id, request.body.user_id],
     ))
+    if (rowCount) request.server.realtime.publish(`group:${request.params.id}`, 'member:joined', { user_id: request.body.user_id })
     return reply.code(201).send({ member: true })
   })
 
@@ -134,6 +136,9 @@ export default async function groupRoutes(app) {
       return c.query('DELETE FROM public.group_members WHERE group_id = $1 AND user_id = $2', [id, userId])
     })
     if (!rowCount) throw notFound('Membre introuvable ou non autorisé')
+    request.server.realtime.publish(`group:${id}`, 'member:left', { user_id: userId })
+    // Un membre parti ou exclu ne reçoit plus les messages du groupe.
+    request.server.realtime.revoke(`group:${id}`, userId)
     return reply.code(204).send()
   })
 
@@ -173,6 +178,7 @@ export default async function groupRoutes(app) {
       )
       return fetchGroupMessage(c, rows[0].id)
     })
+    request.server.realtime.publish(`group:${request.params.id}`, 'message:created', message)
     return reply.code(201).send(message)
   })
 }

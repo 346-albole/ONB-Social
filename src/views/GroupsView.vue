@@ -1,7 +1,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
-import { supabase } from '../lib/supabaseClient'
 import { api } from '../lib/api'
+import { realtime } from '../lib/realtime'
+import { uploadFile } from '../lib/storage'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { triggerNotification } from '../lib/pushNotifications'
@@ -84,7 +85,7 @@ async function load() {
 // ── OPEN GROUP ────────────────────────────────────────────────
 async function openGroup(group) {
   if (activeGroup.value?.id === group.id) return
-  chatSub?.unsubscribe()
+  chatSub?.()
   chatMessages.value = []
   groupMembers.value = []
   activeGroup.value  = group
@@ -108,61 +109,28 @@ async function loadChat() {
 }
 
 function subscribeChat() {
-  chatSub?.unsubscribe()
+  chatSub?.()
   if (!activeGroup.value) return
-  chatSub = supabase.channel(`grpchat:${activeGroup.value.id}`)
-    .on('postgres_changes', {
-      event: 'INSERT', schema: 'public', table: 'group_messages',
-      filter: `group_id=eq.${activeGroup.value.id}`
-    }, async payload => {
-      if (chatMessages.value.find(m => m.id === payload.new.id)) return
-      const { data } = await supabase
-        .from('group_messages')
-        .select('*, profiles(username, avatar_url, username_color)')
-        .eq('id', payload.new.id).single()
-      if (data) {
-        chatMessages.value.push(data); scrollChatToBottom()
-        // Browser notification if message is not from current user and tab is not visible
-        if (data.profiles && data.sender_id !== currentUser.value?.id) {
-          const senderName = data.profiles.username || 'Someone'
-          const groupName = activeGroup.value?.name || 'Group'
-          const msgPreview = data.content || 'Image'
-          triggerNotification(`ONBSocial — ${groupName}`, `${senderName}: ${msgPreview}`)
-        }
+  const groupId = activeGroup.value.id
+  chatSub = realtime.subscribe(`group:${groupId}`, async (event, payload) => {
+    if (event === 'message:created') {
+      if (chatMessages.value.find(m => m.id === payload.id)) return
+      chatMessages.value.push(payload); scrollChatToBottom()
+      // Browser notification if message is not from current user
+      if (payload.profiles && payload.sender_id !== currentUser.value?.id) {
+        const senderName = payload.profiles.username || 'Someone'
+        const groupName = activeGroup.value?.name || 'Group'
+        const msgPreview = payload.content || 'Image'
+        triggerNotification(`ONBSocial — ${groupName}`, `${senderName}: ${msgPreview}`)
       }
-    })
-    .on('postgres_changes', {
-      event: 'UPDATE', schema: 'public', table: 'group_messages',
-      filter: `group_id=eq.${activeGroup.value.id}`
-    }, payload => {
-      const idx = chatMessages.value.findIndex(m => m.id === payload.new.id)
-      if (idx !== -1) chatMessages.value[idx] = { ...chatMessages.value[idx], ...payload.new }
-    })
-    .on('postgres_changes', {
-      event: 'DELETE', schema: 'public', table: 'group_messages',
-      filter: `group_id=eq.${activeGroup.value.id}`
-    }, payload => {
-      chatMessages.value = chatMessages.value.filter(m => m.id !== payload.old.id)
-    })
-    // Listen for member kicks (DELETE on group_members) to update the UI
-    .on('postgres_changes', {
-      event: 'DELETE', schema: 'public', table: 'group_members',
-      filter: `group_id=eq.${activeGroup.value.id}`
-    }, payload => {
-      groupMembers.value = groupMembers.value.filter(m => m.user_id !== payload.old.user_id)
-      // If current user was kicked, reflect that
-      if (payload.old.user_id === currentUser.value?.id) {
-        memberIds.value.delete(activeGroup.value.id)
-      }
-    })
-    .on('postgres_changes', {
-      event: 'INSERT', schema: 'public', table: 'group_members',
-      filter: `group_id=eq.${activeGroup.value.id}`
-    }, async () => {
-      // Refresh members list
+    } else if (event === 'member:left') {
+      // Membre parti ou expulsé
+      groupMembers.value = groupMembers.value.filter(m => m.user_id !== payload.user_id)
+      if (payload.user_id === currentUser.value?.id) memberIds.value.delete(groupId)
+    } else if (event === 'member:joined') {
       await loadMembers()
-    })
-    .subscribe()
+    }
+  })
 }
 
 async function sendChatMessage() {
@@ -240,10 +208,8 @@ async function createGroup() {
   creating.value = true
   let bannerUrl = null
   if (newGroupBanner.value) {
-    const fn = `group-banners/${currentUser.value.id}_${Date.now()}`
-    const { error: upErr } = await supabase.storage.from('media').upload(fn, newGroupBanner.value)
+    const { url: publicUrl, error: upErr } = await uploadFile(newGroupBanner.value, 'group-banner')
     if (!upErr) {
-      const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fn)
       bannerUrl = publicUrl
     }
   }
@@ -329,7 +295,7 @@ function toggleHideGroup(e, group) {
     hiddenGroups.value.add(group.id)
     if (activeGroup.value?.id === group.id) {
       activeGroup.value = null
-      chatSub?.unsubscribe()
+      chatSub?.()
     }
   }
   // Persist in localStorage
@@ -372,7 +338,7 @@ const filteredVisible = computed(() => {
 })
 
 onMounted(() => { loadHiddenGroups(); load() })
-onUnmounted(() => chatSub?.unsubscribe())
+onUnmounted(() => chatSub?.())
 </script>
 
 <template>

@@ -16,7 +16,10 @@ import groupRoutes from './routes/groups.js'
 import forumRoutes from './routes/forum.js'
 import siteRoutes from './routes/site.js'
 import adminRoutes from './routes/admin.js'
+import fileRoutes from './routes/files.js'
 import staticFrontend from './static.js'
+import { createStorage } from './storage/index.js'
+import { createRealtime } from './realtime/index.js'
 
 // Logs lisibles en dev (pino-pretty, devDependency) ; JSON brut en production.
 function loggerOptions() {
@@ -38,6 +41,13 @@ export async function buildApp() {
   })
 
   app.setErrorHandler(errorHandler)
+
+  // Adaptateurs (stockage de fichiers, temps réel) accessibles depuis les routes :
+  // request.server.storage / request.server.realtime
+  const storage = createStorage()
+  const realtime = createRealtime(app.log)
+  app.decorate('storage', storage)
+  app.decorate('realtime', realtime)
 
   await app.register(async (api) => {
     await api.register(authPlugin)
@@ -62,11 +72,15 @@ export async function buildApp() {
     await api.register(forumRoutes, { prefix: '/forum' })
     await api.register(siteRoutes)
     await api.register(adminRoutes, { prefix: '/admin' })
+    await api.register(fileRoutes, { prefix: '/files', storage })
+    await realtime.register(api)
 
     // 404 JSON pour toute route /api inconnue (pas de fallback SPA ici).
     api.setNotFoundHandler(() => { throw notFound('Route inconnue') })
   }, { prefix: '/api' })
 
+  // Médias uploadés (disque local) puis front buildé avec fallback SPA.
+  await storage.register(app)
   await app.register(staticFrontend)
 
   return app

@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { supabase } from '../lib/supabaseClient'
 import { api } from '../lib/api'
+import { uploadFile } from '../lib/storage'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 
@@ -86,17 +86,15 @@ async function uploadReel(e) {
   if (file.size > 50 * 1024 * 1024) { alert('La vidéo est trop volumineuse (limite: 50 Mo).'); return }
   uploading.value = true
   try {
-    const ext = file.name.split('.').pop()
-    const fileName = `${currentUser.value.id}/reel_${Date.now()}.${ext}`
+    
     
     // Timeout de 2 minutes pour éviter que ça ne charge à l'infini en cas de micro-coupure
-    const { error: upErr } = await withTimeout(
-      supabase.storage.from('media').upload(fileName, file),
+    const { url: publicUrl, error: upErr } = await withTimeout(
+      uploadFile(file, 'reel'),
       120000
     )
     if (upErr) throw upErr
 
-    const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName)
     const { error: insertErr } = await api.post('/posts', { media_url: publicUrl, caption: '' })
     if (insertErr) throw insertErr
     e.target.value = ''

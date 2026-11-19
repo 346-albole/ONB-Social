@@ -39,6 +39,7 @@ export default async function globalChatRoutes(app) {
       )
       return fetchGlobalMessage(c, rows[0].id)
     })
+    request.server.realtime.publish('global-chat', 'message:created', message)
     return reply.code(201).send(message)
   })
 
@@ -53,6 +54,7 @@ export default async function globalChatRoutes(app) {
       return rowCount ? fetchGlobalMessage(c, request.params.id) : null
     })
     if (!message) throw notFound('Message introuvable ou non autorisé')
+    request.server.realtime.publish('global-chat', 'message:updated', message)
     return message
   })
 
@@ -62,6 +64,7 @@ export default async function globalChatRoutes(app) {
     const { rowCount } = await request.tx((c) => c.query(
       'UPDATE public.global_messages SET deleted = true WHERE id = $1 AND deleted = false', [request.params.id]))
     if (!rowCount) throw notFound('Message introuvable ou non autorisé')
+    request.server.realtime.publish('global-chat', 'message:deleted', { id: request.params.id })
     return reply.code(204).send()
   })
 }

@@ -1,7 +1,7 @@
 /**
  * Wraps a promise with a timeout.
  * If the promise doesn't resolve within `ms`, resolves with `fallback`.
- * Prevents infinite loading spinners when Supabase is slow or hanging.
+ * Prevents infinite loading spinners when the API is slow or hanging.
  */
 export function withTimeout(promise, ms = 8000, fallback = null) {
   let timer

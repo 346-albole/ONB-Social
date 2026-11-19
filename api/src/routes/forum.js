@@ -121,6 +121,7 @@ export default async function forumRoutes(app) {
       )
       return fetchForumComment(c, rows[0].id)
     })
+    request.server.realtime.publish(`forum-post:${request.params.id}`, 'comment:created', comment)
     return reply.code(201).send(comment)
   })
 

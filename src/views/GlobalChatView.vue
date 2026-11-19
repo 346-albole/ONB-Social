@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, onActivated, nextTick, computed } from 'vue'
-import { supabase } from '../lib/supabaseClient'
 import { api } from '../lib/api'
+import { realtime } from '../lib/realtime'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout } from '../lib/withTimeout'
 import { onlineUsers } from '../stores/presence'
@@ -75,7 +75,7 @@ function _gcVisHandler() {
 onMounted(() => { document.addEventListener('visibilitychange', _gcVisHandler) })
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', _gcVisHandler)
-  realtimeSub?.unsubscribe()
+  realtimeSub?.()
   realtimeSub = null
 })
 
@@ -92,31 +92,22 @@ async function loadMessages() {
 }
 
 function subscribeMessages() {
-  realtimeSub?.unsubscribe()
-  realtimeSub = supabase.channel('global-chat-v3')
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'global_messages' }, async payload => {
-      if (messages.value.find(m => m.id === payload.new.id)) return
-      const { data } = await supabase
-        .from('global_messages')
-        .select('*, profiles(id, username, avatar_url, username_color, is_premium, is_official, is_admin, is_anonymous)')
-        .eq('id', payload.new.id).single()
-      if (data && !data.deleted) {
-        messages.value.push(data)
-        await nextTick()
-        scrollToBottom()
-      }
-    })
-    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'global_messages' }, payload => {
-      const idx = messages.value.findIndex(m => m.id === payload.new.id)
-      if (idx !== -1) {
-        if (payload.new.deleted) messages.value.splice(idx, 1)
-        else messages.value[idx] = { ...messages.value[idx], ...payload.new }
-      }
-    })
-    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'global_messages' }, payload => {
-      messages.value = messages.value.filter(m => m.id !== payload.old.id)
-    })
-    .subscribe()
+  realtimeSub?.()
+  realtimeSub = realtime.subscribe('global-chat', async (event, payload) => {
+    if (event === 'message:created') {
+      if (messages.value.find(m => m.id === payload.id) || payload.deleted) return
+      messages.value.push(payload)
+      await nextTick()
+      scrollToBottom()
+    } else if (event === 'message:updated') {
+      const idx = messages.value.findIndex(m => m.id === payload.id)
+      if (idx !== -1) messages.value[idx] = { ...messages.value[idx], ...payload }
+    } else if (event === 'message:deleted') {
+      messages.value = messages.value.filter(m => m.id !== payload.id)
+    } else if (event === 'messages:cleared') {
+      messages.value = []
+    }
+  })
 }
 
 async function sendMessage() {

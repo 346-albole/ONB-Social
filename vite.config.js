@@ -13,6 +13,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': { target: process.env.VITE_API_PROXY_TARGET || 'http://localhost:3000', changeOrigin: true, ws: true },
+      // Médias uploadés, servis par l'API (adaptateur de stockage « disque local »)
+      '/media': { target: process.env.VITE_API_PROXY_TARGET || 'http://localhost:3000', changeOrigin: true },
     },
   },
   optimizeDeps: {

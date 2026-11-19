@@ -92,6 +92,38 @@ La Function timer utilise donc `JOBS_DB_USER`. Elle ne peut rien faire d'autre
 qu'appeler la fonction : `SECURITY DEFINER` l'exécute avec les droits de son
 propriétaire, ce qui lui permet de mettre à jour les profils expirés.
 
+## Fichiers et temps réel
+
+**Fichiers.** Le front envoie ses uploads à `POST /api/files` via
+`uploadFile(file, kind)` (`src/lib/storage.js`). L'API contrôle le type (images
+JPEG, PNG, WebP et GIF, vidéos MP4, WebM et MOV ; pas de SVG) et la taille
+(`MAX_UPLOAD_MB`). L'adaptateur « disque local » écrit dans `MEDIA_DIR` et
+l'API sert les fichiers sous `/media/…`, avec un cache long. L'URL renvoyée est
+stockée telle quelle en base. Sur App Service, `MEDIA_DIR=/home/data/media`
+pointe vers le stockage persistant, hors du dossier de l'app.
+
+**Temps réel.** Le front utilise `realtime.subscribe(canal, handler)`
+(`src/lib/realtime/`). L'API publie après chaque écriture concernée
+(`request.server.realtime.publish(canal, événement, données)`). Le transport
+local est un WebSocket intégré à l'API, sur le même serveur et le même port
+(`/api/realtime`, découvert via `GET /api/realtime/negotiate`). Sur App Service,
+il faut activer « Web sockets ».
+
+| Canal | Événements | Qui peut s'abonner |
+|---|---|---|
+| `feed` | `post:created`, `post:deleted`, `like:created`, `like:deleted`, `comment:created` | tout utilisateur connecté |
+| `global-chat` | `message:created`, `message:updated`, `message:deleted`, `messages:cleared` | tout utilisateur connecté |
+| `dm:<userId>` | `message:created`, `message:updated` | l'utilisateur lui-même |
+| `group:<groupId>` | `message:created`, `member:joined`, `member:left` | membres et admins (révoqué à l'exclusion) |
+| `forum-post:<id>` | `comment:created` | tout utilisateur connecté |
+| `user:<userId>` | `command` (rechargement à distance par un admin) | l'utilisateur lui-même |
+| `site-settings` | `updated` (mode troll) | tout utilisateur connecté |
+| `presence` | `sync` (`{ online: [...] }`) | tout utilisateur connecté |
+
+Limite du WebSocket local : l'état est gardé en mémoire et ne vaut que pour une
+seule instance de l'API. Pour plusieurs instances, il faudra passer à Azure Web
+PubSub (voir `PORTAGE_AZURE.md`).
+
 ## Créer un compte admin
 
 1. Connectez-vous une fois avec le compte voulu : le profil est créé à la
@@ -123,6 +155,8 @@ La liste complète et commentée est dans `.env.example`. Principales variables 
 | `DEV_AUTH_ENABLED` | Active le fournisseur de tokens local (jamais en production) |
 | `STATIC_DIR` | Dossier du front buildé (`dist` par défaut) |
 | `MEDIA_DIR` | Dossier des fichiers uploadés (`/home/data/media` en production) |
+| `STORAGE_PROVIDER`, `MEDIA_PUBLIC_PATH`, `MAX_UPLOAD_MB` | Adaptateur de stockage, préfixe d'URL des médias, taille maximale |
+| `REALTIME_PROVIDER` | Adaptateur temps réel (`ws`) |
 | `VITE_AUTH_PROVIDER` | `dev` ou `msal` (front) |
 
 Aucun secret n'est commité : `.env`, la clé de signature dev (`api/.dev-auth/`)
@@ -134,10 +168,14 @@ et les médias (`data/`) sont ignorés par git.
 api/                 API Fastify
   src/auth/          validation JWT, création du profil, fournisseur dev
   src/routes/        endpoints par domaine
+  src/storage/       adaptateur de fichiers (disque local)
+  src/realtime/      adaptateur temps réel (WebSocket)
   scripts/           db-migrate, make-admin
 db/                  schema.sql (schéma consolidé + RLS), seed.sql
 src/                 front Vue
   lib/api.js         client unique de l'API
   lib/auth/          module d'auth (interface, implémentation dev, squelette MSAL)
+  lib/realtime/      client temps réel (interface + WebSocket)
+  lib/storage.js     upload de fichiers
 docs/                audit et notes de portage
 ```

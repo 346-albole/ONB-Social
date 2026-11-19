@@ -28,7 +28,7 @@ export default async function staticFrontend(app) {
 
   app.get('/*', { config: { auth: 'none' } }, (request, reply) => {
     const rel = decodeURIComponent(request.params['*'] || '')
-    if (rel === 'api' || rel.startsWith('api/')) {
+    if (rel === 'api' || rel.startsWith('api/') || rel.startsWith(`${config.storage.publicPath.replace(/^\/+|\/+$/g, '')}/`)) {
       return reply.code(404).send({ error: { code: 'not_found', message: 'Route inconnue' } })
     }
     const target = path.resolve(config.staticDir, rel)

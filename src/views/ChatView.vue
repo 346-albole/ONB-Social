@@ -1,8 +1,9 @@
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { supabase } from '../lib/supabaseClient'
 import { api } from '../lib/api'
+import { realtime } from '../lib/realtime'
+import { uploadFile } from '../lib/storage'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { triggerNotification } from '../lib/pushNotifications'
@@ -81,7 +82,7 @@ onMounted(async () => {
   })
 })
 onUnmounted(() => {
-  realtimeSub?.unsubscribe()
+  realtimeSub?.()
   document.removeEventListener('visibilitychange', _visRefresh)
 })
 
@@ -151,10 +152,8 @@ async function handleImagePick(e) {
   const file = e.target.files[0]
   if (!file) return
   sending.value = true
-  const path = `chat/${currentUser.value.id}/${Date.now()}_${file.name}`
-  const { error: upErr } = await supabase.storage.from('media').upload(path, file)
+  const { url: publicUrl, error: upErr } = await uploadFile(file, 'dm')
   if (upErr) { sending.value = false; return }
-  const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(path)
   await insertDM({ content: '', image_url: publicUrl })
   sending.value = false
   e.target.value = ''
@@ -210,55 +209,49 @@ async function deleteMsg(msg) {
 }
 
 function subscribeRealtime() {
-  realtimeSub?.unsubscribe()
+  realtimeSub?.()
   const uid = currentUser.value.id
   // Filtre strict : uniquement les messages REÇUS par moi (pas envoyés par moi)
-  realtimeSub = supabase.channel(`dm_inbox:${uid}`)
-    .on('postgres_changes', {
-      event: 'INSERT', schema: 'public', table: 'messages',
-      filter: `receiver_id=eq.${uid}`
-    }, async payload => {
-      const senderId = payload.new.sender_id
-      // Sécurité : ignorer si c'est mon propre message (ne devrait pas arriver
-      // avec receiver_id=eq.${uid} mais soyons prudents)
-      if (senderId === uid) return
+  // Boîte de réception : messages reçus (créés ou modifiés) — canal dm:<moi>
+  realtimeSub = realtime.subscribe(`dm:${uid}`, (event, message) => {
+    if (event === 'message:updated') {
+      const idx = dmMessages.value.findIndex(m => m.id === message.id)
+      if (idx !== -1) dmMessages.value.splice(idx, 1, { ...dmMessages.value[idx], ...message })
+      return
+    }
+    if (event !== 'message:created') return
+    const senderId = message.sender_id
+    // Sécurité : ignorer si c'est mon propre message
+    if (senderId === uid) return
 
-      const isActiveConv = activeFriend.value?.id === senderId
+    const isActiveConv = activeFriend.value?.id === senderId
 
-      if (isActiveConv) {
-        // Conversation ouverte : ajouter le message + marquer lu
-        if (!dmMessages.value.find(m => m.id === payload.new.id)) {
-          dmMessages.value.push(payload.new)
-          scrollToBottom()
-          api.post(`/messages/${payload.new.id}/read`)
-        }
-        // Notif seulement si l'onglet est masqué
-        if (document.hidden) {
-          const senderName = activeFriend.value?.username || "Someone"
-          triggerNotification(`ONBSocial — ${senderName}`, payload.new.content || '[Image]')
-        }
-      } else {
-        // Autre ami : badge + remonter dans la liste
-        const sender = friends.value.find(f => f.id === senderId)
-        if (sender) {
-          sender.unread = (sender.unread || 0) + 1
-          sender.lastMsg = payload.new
-          // Remonter cet ami en tête
-          friends.value = [sender, ...friends.value.filter(f => f.id !== senderId)]
-        }
-        // Notif quelle que soit la visibilité (l'utilisateur regarde autre chose)
-        const senderName = sender?.username || "Someone"
-        triggerNotification(`ONBSocial — ${senderName}`, payload.new.content || '[Image]')
+    if (isActiveConv) {
+      // Conversation ouverte : ajouter le message + marquer lu
+      if (!dmMessages.value.find(m => m.id === message.id)) {
+        dmMessages.value.push(message)
+        scrollToBottom()
+        api.post(`/messages/${message.id}/read`)
       }
-    })
-    .on('postgres_changes', {
-      event: 'UPDATE', schema: 'public', table: 'messages',
-      filter: `receiver_id=eq.${uid}`
-    }, payload => {
-      const idx = dmMessages.value.findIndex(m => m.id === payload.new.id)
-      if (idx !== -1) dmMessages.value.splice(idx, 1, { ...dmMessages.value[idx], ...payload.new })
-    })
-    .subscribe()
+      // Notif seulement si l'onglet est masqué
+      if (document.hidden) {
+        const senderName = activeFriend.value?.username || "Someone"
+        triggerNotification(`ONBSocial — ${senderName}`, message.content || '[Image]')
+      }
+    } else {
+      // Autre ami : badge + remonter dans la liste
+      const sender = friends.value.find(f => f.id === senderId)
+      if (sender) {
+        sender.unread = (sender.unread || 0) + 1
+        sender.lastMsg = message
+        // Remonter cet ami en tête
+        friends.value = [sender, ...friends.value.filter(f => f.id !== senderId)]
+      }
+      // Notif quelle que soit la visibilité (l'utilisateur regarde autre chose)
+      const senderName = sender?.username || "Someone"
+      triggerNotification(`ONBSocial — ${senderName}`, message.content || '[Image]')
+    }
+  })
 }
 
 function scrollToBottom() { nextTick(() => messagesEnd.value?.scrollIntoView({ behavior: 'smooth' })) }

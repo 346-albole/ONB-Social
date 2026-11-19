@@ -1,7 +1,8 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { supabase } from '../lib/supabaseClient'
 import { api } from '../lib/api'
+import { realtime } from '../lib/realtime'
+import { uploadFile } from '../lib/storage'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { useRouter } from 'vue-router'
@@ -76,7 +77,7 @@ onMounted(async () => {
   })
 })
 
-onUnmounted(() => { realtimeSub?.unsubscribe() })
+onUnmounted(() => { realtimeSub?.() })
 
 // ── POSTS ─────────────────────────────────────────────────────
 async function loadPosts() {
@@ -127,7 +128,7 @@ async function openPost(post) {
 function backToList() {
   view.value = 'list'
   activePost.value = null
-  realtimeSub?.unsubscribe()
+  realtimeSub?.()
   replyTo.value = null
   newComment.value = ''
 }
@@ -150,19 +151,11 @@ async function loadComments(postId) {
 }
 
 function subscribePost(postId) {
-  realtimeSub?.unsubscribe()
-  realtimeSub = supabase.channel(`forum-post-${postId}`)
-    .on('postgres_changes', {
-      event: 'INSERT', schema: 'public', table: 'forum_comments',
-      filter: `post_id=eq.${postId}`
-    }, async payload => {
-      if (postComments.value.find(c => c.id === payload.new.id)) return
-      const { data } = await supabase.from('forum_comments')
-        .select('id, content, created_at, user_id, parent_id, profiles(id, username, avatar_url, username_color, is_premium, is_official), forum_votes(count)')
-        .eq('id', payload.new.id).single()
-      if (data) postComments.value.push(data)
-    })
-    .subscribe()
+  realtimeSub?.()
+  realtimeSub = realtime.subscribe(`forum-post:${postId}`, (event, comment) => {
+    if (event !== 'comment:created') return
+    if (!postComments.value.find(c => c.id === comment.id)) postComments.value.push(comment)
+  })
 }
 
 // ── VOTE ON POST ───────────────────────────────────────────────
@@ -279,10 +272,8 @@ async function createPost() {
   creating.value = true
   let imageUrl = null
   if (newImageFile.value) {
-    const fn = `forum/${currentUser.value.id}_${Date.now()}`
-    const { error: upErr } = await supabase.storage.from('media').upload(fn, newImageFile.value)
+    const { url: publicUrl, error: upErr } = await uploadFile(newImageFile.value, 'forum')
     if (!upErr) {
-      const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fn)
       imageUrl = publicUrl
     }
   }

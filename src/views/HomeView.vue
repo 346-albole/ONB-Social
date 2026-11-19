@@ -1,8 +1,9 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { supabase } from '../lib/supabaseClient'
 import { api } from '../lib/api'
+import { realtime } from '../lib/realtime'
+import { uploadFile, isOwnMediaUrl } from '../lib/storage'
 import { getCurrentSession } from '../lib/authStore'
 import { withTimeout, makeSafeLoader } from '../lib/withTimeout'
 import { checkModeration } from '../lib/moderation'
@@ -190,11 +191,9 @@ async function uploadPost() {
 
   uploading.value = true
   try {
-    const ext = file.value.type === 'image/png' ? 'png' : file.value.type === 'image/webp' ? 'webp' : 'jpg'
-    const fileName = `${currentUser.value.id}/${Date.now()}.${ext}`
-    const { error: uploadErr } = await supabase.storage.from('media').upload(fileName, file.value)
+    
+    const { url: publicUrl, error: uploadErr } = await uploadFile(file.value, 'post')
     if (uploadErr) throw uploadErr
-    const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName)
     const { error: insertErr } = await api.post('/posts', { caption: caption.value, media_url: publicUrl })
     if (insertErr) throw insertErr
 
@@ -226,7 +225,7 @@ async function freezeIfGif(img, url) {
   
   let isGif = url.toLowerCase().includes('.gif')
   // Check Content-Type for older uploads without extension
-  if (!isGif && url.includes('supabase.co')) {
+  if (!isGif && isOwnMediaUrl(url)) {
     try {
       const resp = await fetch(url, { method: 'HEAD' })
       if (resp.headers.get('content-type') === 'image/gif') isGif = true
@@ -271,49 +270,33 @@ onMounted(async () => {
   fetchPosts()
 
   // Realtime: new posts
-  realtimeSub = supabase.channel('home-feed')
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts' }, async payload => {
-      const { data } = await supabase
-        .from('posts')
-        .select(`*, profiles(id, username, avatar_url, is_premium, is_official, username_color), likes(id, user_id), comments(id, content, created_at, profiles(username, is_official))`)
-        .eq('id', payload.new.id).single()
-      if (data && !posts.value.find(p => p.id === data.id)) {
-        posts.value.unshift(data)
-      }
-    })
-    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'posts' }, payload => {
-      posts.value = posts.value.filter(p => p.id !== payload.old.id)
-    })
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'likes' }, payload => {
+  realtimeSub = realtime.subscribe('feed', (event, payload) => {
+    if (event === 'post:created') {
+      if (payload && !posts.value.find(p => p.id === payload.id)) posts.value.unshift(payload)
+    } else if (event === 'post:deleted') {
+      posts.value = posts.value.filter(p => p.id !== payload.id)
+    } else if (event === 'like:created') {
       // Skip if we triggered this (already optimistically updated)
-      if (payload.new.user_id === currentUser.value?.id && pendingLikes.has(payload.new.post_id)) return
-      const post = posts.value.find(p => p.id === payload.new.post_id)
-      if (post && !post.likes?.find(l => l.user_id === payload.new.user_id && l.post_id === payload.new.post_id)) {
-        post.likes = [...(post.likes || []), payload.new]
-        if (payload.new.user_id === currentUser.value?.id) likedPosts.value.add(payload.new.post_id)
+      if (payload.user_id === currentUser.value?.id && pendingLikes.has(payload.post_id)) return
+      const post = posts.value.find(p => p.id === payload.post_id)
+      if (post && !post.likes?.find(l => l.user_id === payload.user_id)) {
+        post.likes = [...(post.likes || []), payload]
+        if (payload.user_id === currentUser.value?.id) likedPosts.value.add(payload.post_id)
       }
-    })
-    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'likes' }, payload => {
-      if (payload.old.user_id === currentUser.value?.id && pendingLikes.has(payload.old.post_id)) return
-      const post = posts.value.find(p => p.id === payload.old.post_id)
+    } else if (event === 'like:deleted') {
+      if (payload.user_id === currentUser.value?.id && pendingLikes.has(payload.post_id)) return
+      const post = posts.value.find(p => p.id === payload.post_id)
       if (post) {
-        post.likes = (post.likes || []).filter(l => !(l.user_id === payload.old.user_id && l.post_id === payload.old.post_id))
-        if (payload.old.user_id === currentUser.value?.id) likedPosts.value.delete(payload.old.post_id)
+        post.likes = (post.likes || []).filter(l => l.user_id !== payload.user_id)
+        if (payload.user_id === currentUser.value?.id) likedPosts.value.delete(payload.post_id)
       }
-    })
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments' }, async payload => {
-      const post = posts.value.find(p => p.id === payload.new.post_id)
-      if (post) {
-        const { data } = await supabase
-          .from('comments')
-          .select('id, content, created_at, profiles(username, is_official)')
-          .eq('id', payload.new.id).single()
-        if (data && !post.comments?.find(c => c.id === data.id)) {
-          post.comments = [...(post.comments || []), data]
-        }
+    } else if (event === 'comment:created') {
+      const post = posts.value.find(p => p.id === payload.post_id)
+      if (post && !post.comments?.find(c => c.id === payload.comment.id)) {
+        post.comments = [...(post.comments || []), payload.comment]
       }
-    })
-    .subscribe()
+    }
+  })
 
   // Refresh when returning to tab
   let homeHiddenAt = 0
@@ -353,7 +336,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  realtimeSub?.unsubscribe()
+  realtimeSub?.()
   if (visibilityHandler) document.removeEventListener('visibilitychange', visibilityHandler)
 })
 </script>
